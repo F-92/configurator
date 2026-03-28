@@ -132,7 +132,7 @@ function generateWallStuds(
 
   // Generate stud positions at c/c 600
   const studPositions: number[] = [];
-  // Corner studs
+  // End studs at each wall extremity
   studPositions.push(STUD_WIDTH / 2);
   studPositions.push(wallLength - STUD_WIDTH / 2);
 
@@ -268,7 +268,11 @@ export function WallStuds({
 }: WallStudsProps) {
   const { width, depth, wallHeight } = config;
 
-  const allStuds = useMemo(() => {
+  // California corner framing: front/back walls run full width (through walls),
+  // left/right walls are shortened to fit between them (butt walls).
+  // A flat backing stud at each corner provides interior nailing surface.
+  const { walls, cornerBackers } = useMemo(() => {
+    const sideLength = depth - 2 * STUD_DEPTH;
     const wallDefs: {
       wallName: "front" | "back" | "left" | "right";
       length: number;
@@ -289,19 +293,19 @@ export function WallStuds({
       },
       {
         wallName: "left",
-        length: depth,
-        position: [-width / 2, 0, -depth / 2],
+        length: sideLength,
+        position: [-width / 2, 0, -depth / 2 + STUD_DEPTH],
         rotationY: -Math.PI / 2,
       },
       {
         wallName: "right",
-        length: depth,
-        position: [width / 2, 0, depth / 2],
+        length: sideLength,
+        position: [width / 2, 0, depth / 2 - STUD_DEPTH],
         rotationY: Math.PI / 2,
       },
     ];
 
-    return wallDefs.map((wd) => {
+    const wallResults = wallDefs.map((wd) => {
       const openings = getOpeningsForWall(wd.wallName, wd.length, config);
       const vpHeight = showVerticalTopPlate ? VERTICAL_PLATE_HEIGHT : 0;
       const studs = generateWallStuds(
@@ -315,13 +319,54 @@ export function WallStuds({
         : null;
       return { ...wd, studs, verticalPlate };
     });
+
+    // California corner backing studs — flat studs (turned 90°) nailed to
+    // the inside face of each through-wall corner stud, providing an
+    // interior nailing surface for the perpendicular wall's drywall.
+    const plateTop = wallHeight - PLATE_HEIGHT;
+    const fullH = plateTop - PLATE_HEIGHT;
+    const backerY = PLATE_HEIGHT + fullH / 2;
+    const hw = width / 2;
+    const hd = depth / 2;
+    const backers = [
+      // Front-right — inside front wall cavity, nailed to corner stud side
+      {
+        x: hw - STUD_WIDTH - STUD_DEPTH / 2,
+        y: backerY,
+        z: hd - STUD_DEPTH + STUD_WIDTH / 2,
+        h: fullH,
+      },
+      // Front-left
+      {
+        x: -hw + STUD_WIDTH + STUD_DEPTH / 2,
+        y: backerY,
+        z: hd - STUD_DEPTH + STUD_WIDTH / 2,
+        h: fullH,
+      },
+      // Back-right
+      {
+        x: hw - STUD_WIDTH - STUD_DEPTH / 2,
+        y: backerY,
+        z: -hd + STUD_DEPTH - STUD_WIDTH / 2,
+        h: fullH,
+      },
+      // Back-left
+      {
+        x: -hw + STUD_WIDTH + STUD_DEPTH / 2,
+        y: backerY,
+        z: -hd + STUD_DEPTH - STUD_WIDTH / 2,
+        h: fullH,
+      },
+    ];
+
+    return { walls: wallResults, cornerBackers: backers };
   }, [width, depth, wallHeight, config, showVerticalTopPlate]);
 
   const pineTexture = useMemo(() => getPineTexture(), []);
 
   return (
     <group>
-      {allStuds.map((wall) => (
+      {walls.map((wall) => (
         <group
           key={wall.wallName}
           position={wall.position}
@@ -360,6 +405,17 @@ export function WallStuds({
             </mesh>
           )}
         </group>
+      ))}
+      {/* California corner backing studs (flat, turned 90°) */}
+      {cornerBackers.map((b, i) => (
+        <mesh key={`corner-backer-${i}`} position={[b.x, b.y, b.z]}>
+          <boxGeometry args={[STUD_DEPTH, b.h, STUD_WIDTH]} />
+          <meshStandardMaterial
+            map={pineTexture}
+            color="#e8c88a"
+            roughness={0.85}
+          />
+        </mesh>
       ))}
     </group>
   );
