@@ -25,92 +25,90 @@ function generateGableTruss(
   span: number,
   pitch: number,
   wallHeight: number,
+  overhang: number = 0,
 ): TrussProfile {
   const pitchRad = (pitch * Math.PI) / 180;
   const halfSpan = span / 2;
   const ridgeHeight = halfSpan * Math.tan(pitchRad);
+  const eaveDrop = overhang * Math.tan(pitchRad);
+  const eaveX = halfSpan + overhang;
+  const eaveY = wallHeight - eaveDrop;
   const members: TrussProfile["members"] = [];
 
-  // Bottom chord (horizontal)
+  // Bottom chord (horizontal - wall to wall)
   members.push({
     start: [-halfSpan, wallHeight],
     end: [halfSpan, wallHeight],
     thickness: CHORD_H,
   });
 
-  // Left rafter (top chord)
+  // Left rafter (top chord) - extends to overhang
   members.push({
-    start: [-halfSpan, wallHeight],
+    start: [-eaveX, eaveY],
     end: [0, wallHeight + ridgeHeight],
     thickness: CHORD_H,
   });
 
-  // Right rafter (top chord)
+  // Right rafter (top chord) - extends to overhang
   members.push({
-    start: [halfSpan, wallHeight],
+    start: [eaveX, eaveY],
     end: [0, wallHeight + ridgeHeight],
     thickness: CHORD_H,
   });
 
-  // King post (vertical center)
-  if (ridgeHeight > 0.5) {
-    members.push({
-      start: [0, wallHeight],
-      end: [0, wallHeight + ridgeHeight],
-      thickness: WEB_H,
-    });
-  }
+  if (ridgeHeight < 0.3) return { members };
 
-  // Web members (diagonals) for wider spans
-  if (span > 6) {
-    const quarterSpan = halfSpan / 2;
-    const quarterHeight = quarterSpan * Math.tan(pitchRad);
+  // Determine truss type based on span
+  const numPanels = span <= 6 ? 1 : span <= 10 ? 2 : 3;
 
-    // Left diagonal web
-    members.push({
-      start: [-quarterSpan, wallHeight],
-      end: [-quarterSpan, wallHeight + quarterHeight],
-      thickness: WEB_H,
-    });
+  // King post (center vertical)
+  members.push({
+    start: [0, wallHeight],
+    end: [0, wallHeight + ridgeHeight],
+    thickness: WEB_H,
+  });
 
-    // Right diagonal web
-    members.push({
-      start: [quarterSpan, wallHeight],
-      end: [quarterSpan, wallHeight + quarterHeight],
-      thickness: WEB_H,
-    });
+  for (const side of [-1, 1]) {
+    if (numPanels === 1) {
+      // Kungstolstakstol - king post with diagonal struts (strävor)
+      // Struts from king post at ~40% height out to rafters at ~55%
+      if (ridgeHeight > 0.5) {
+        const strutBaseY = wallHeight + ridgeHeight * 0.35;
+        const rFrac = 0.55;
+        const rX = side * halfSpan * (1 - rFrac);
+        const rY = wallHeight + ridgeHeight * rFrac;
+        members.push({
+          start: [0, strutBaseY],
+          end: [rX, rY],
+          thickness: WEB_H,
+        });
+      }
+    } else {
+      // Fackverkstakstol (W-truss / Fink pattern)
+      // Verticals at each interior panel point +
+      // Diagonals from each rafter panel point inward-down to next bc panel point
+      for (let i = 1; i < numPanels; i++) {
+        const frac = i / numPanels;
+        const x = side * halfSpan * (1 - frac);
+        const ry = wallHeight + ridgeHeight * frac;
 
-    // Left diagonal brace
-    members.push({
-      start: [-quarterSpan, wallHeight],
-      end: [0, wallHeight + ridgeHeight * 0.6],
-      thickness: WEB_H,
-    });
+        // Vertical strut at panel point
+        members.push({
+          start: [x, wallHeight],
+          end: [x, ry],
+          thickness: WEB_H,
+        });
 
-    // Right diagonal brace
-    members.push({
-      start: [quarterSpan, wallHeight],
-      end: [0, wallHeight + ridgeHeight * 0.6],
-      thickness: WEB_H,
-    });
-  }
-
-  // Extra webs for very wide spans
-  if (span > 10) {
-    const thirdSpan = (halfSpan * 2) / 3;
-    const thirdHeight = thirdSpan * Math.tan(pitchRad) * 0.5;
-
-    members.push({
-      start: [-thirdSpan, wallHeight],
-      end: [-halfSpan / 3, wallHeight + ridgeHeight * 0.4],
-      thickness: WEB_H,
-    });
-
-    members.push({
-      start: [thirdSpan, wallHeight],
-      end: [halfSpan / 3, wallHeight + ridgeHeight * 0.4],
-      thickness: WEB_H,
-    });
+        // Diagonal from this rafter panel point down toward center
+        const nextFrac = (i + 1) / numPanels;
+        const nextBcX = side * halfSpan * (1 - nextFrac);
+        members.push({
+          start: [x, ry],
+          end: [nextBcX, wallHeight],
+          thickness: WEB_H,
+        });
+      }
+    }
   }
 
   return { members };
@@ -122,10 +120,14 @@ function generateHipTrussAtPosition(
   pitch: number,
   wallHeight: number,
   zPos: number,
+  overhang: number = 0,
 ): TrussProfile {
   const pitchRad = (pitch * Math.PI) / 180;
   const halfSpan = span / 2;
   const fullRidgeHeight = halfSpan * Math.tan(pitchRad);
+  const eaveDrop = overhang * Math.tan(pitchRad);
+  const eaveX = halfSpan + overhang;
+  const eaveY = wallHeight - eaveDrop;
   const halfDepth = depth / 2;
 
   // Hip trusses get shorter as they approach the ends
@@ -151,42 +153,66 @@ function generateHipTrussAtPosition(
     thickness: CHORD_H,
   });
 
-  // Rafters
+  // Rafters - extend to overhang
   members.push({
-    start: [-halfSpan, wallHeight],
+    start: [-eaveX, eaveY],
     end: [0, wallHeight + ridgeHeight],
     thickness: CHORD_H,
   });
   members.push({
-    start: [halfSpan, wallHeight],
+    start: [eaveX, eaveY],
     end: [0, wallHeight + ridgeHeight],
     thickness: CHORD_H,
   });
+
+  if (ridgeHeight < 0.3) return { members };
+
+  // Choose panel count based on span and available ridge height
+  const numPanels = ridgeHeight < 1.0 || span <= 6 ? 1 : span <= 10 ? 2 : 3;
 
   // King post
-  if (ridgeHeight > 0.3) {
-    members.push({
-      start: [0, wallHeight],
-      end: [0, wallHeight + ridgeHeight],
-      thickness: WEB_H,
-    });
-  }
+  members.push({
+    start: [0, wallHeight],
+    end: [0, wallHeight + ridgeHeight],
+    thickness: WEB_H,
+  });
 
-  // Webs for wider spans
-  if (span > 6 && ridgeHeight > 0.5) {
-    const qSpan = halfSpan / 2;
-    const qHeight = ridgeHeight / 2;
+  for (const side of [-1, 1]) {
+    if (numPanels === 1) {
+      // Simple struts (strävor) for small/reduced-height trusses
+      if (ridgeHeight > 0.5) {
+        const strutBaseY = wallHeight + ridgeHeight * 0.35;
+        const rFrac = 0.55;
+        const rX = side * halfSpan * (1 - rFrac);
+        const rY = wallHeight + ridgeHeight * rFrac;
+        members.push({
+          start: [0, strutBaseY],
+          end: [rX, rY],
+          thickness: WEB_H,
+        });
+      }
+    } else {
+      // Fackverkstakstol W-pattern (same as gable)
+      for (let i = 1; i < numPanels; i++) {
+        const frac = i / numPanels;
+        const x = side * halfSpan * (1 - frac);
+        const ry = wallHeight + ridgeHeight * frac;
 
-    members.push({
-      start: [-qSpan, wallHeight],
-      end: [0, wallHeight + qHeight],
-      thickness: WEB_H,
-    });
-    members.push({
-      start: [qSpan, wallHeight],
-      end: [0, wallHeight + qHeight],
-      thickness: WEB_H,
-    });
+        members.push({
+          start: [x, wallHeight],
+          end: [x, ry],
+          thickness: WEB_H,
+        });
+
+        const nextFrac = (i + 1) / numPanels;
+        const nextBcX = side * halfSpan * (1 - nextFrac);
+        members.push({
+          start: [x, ry],
+          end: [nextBcX, wallHeight],
+          thickness: WEB_H,
+        });
+      }
+    }
   }
 
   return { members };
@@ -196,47 +222,66 @@ function generateShedTruss(
   span: number,
   pitch: number,
   wallHeight: number,
+  overhang: number = 0,
 ): TrussProfile {
   const pitchRad = (pitch * Math.PI) / 180;
   const rise = span * Math.tan(pitchRad);
+  const eaveDrop = overhang * Math.tan(pitchRad);
   const halfSpan = span / 2;
+  const eaveXHigh = halfSpan + overhang;
+  const eaveXLow = halfSpan + overhang;
+  const highY = wallHeight + rise + eaveDrop;
+  const lowY = wallHeight - eaveDrop;
   const members: TrussProfile["members"] = [];
 
-  // Bottom chord
+  // Bottom chord (wall to wall)
   members.push({
     start: [-halfSpan, wallHeight],
     end: [halfSpan, wallHeight],
     thickness: CHORD_H,
   });
 
-  // Single rafter (top chord)
+  // Single rafter (top chord) - extends to overhang
   members.push({
-    start: [-halfSpan, wallHeight + rise],
-    end: [halfSpan, wallHeight],
+    start: [-eaveXHigh, highY],
+    end: [eaveXLow, lowY],
     thickness: CHORD_H,
   });
 
-  // Vertical at high side
-  members.push({
-    start: [-halfSpan, wallHeight],
-    end: [-halfSpan, wallHeight + rise],
-    thickness: WEB_H,
-  });
+  // Panel count based on span
+  const numPanels = Math.max(2, Math.ceil(span / 2.0));
 
-  // Intermediate verticals
-  if (span > 5) {
-    const numIntermediates = Math.floor(span / 2.5);
-    for (let i = 1; i <= numIntermediates; i++) {
-      const t = i / (numIntermediates + 1);
-      const x = -halfSpan + t * span;
-      const h = rise * (1 - t);
-      if (h > 0.15) {
-        members.push({
-          start: [x, wallHeight],
-          end: [x, wallHeight + h],
-          thickness: WEB_H,
-        });
-      }
+  // Verticals at each panel point (wall line to rafter)
+  for (let i = 0; i <= numPanels; i++) {
+    const t = i / numPanels;
+    const x = -halfSpan + t * span;
+    const rY = wallHeight + rise * (1 - t);
+
+    if (rY - wallHeight > 0.15) {
+      members.push({
+        start: [x, wallHeight],
+        end: [x, rY],
+        thickness: WEB_H,
+      });
+    }
+  }
+
+  // Diagonal braces between panel points
+  // Each diagonal goes from top of a vertical down to bottom of the next
+  for (let i = 0; i < numPanels; i++) {
+    const t1 = i / numPanels;
+    const t2 = (i + 1) / numPanels;
+    const x1 = -halfSpan + t1 * span;
+    const x2 = -halfSpan + t2 * span;
+    const rY1 = wallHeight + rise * (1 - t1);
+
+    // Only add diagonal if the vertical height is meaningful
+    if (rY1 - wallHeight > 0.3) {
+      members.push({
+        start: [x1, rY1],
+        end: [x2, wallHeight],
+        thickness: WEB_H,
+      });
     }
   }
 
@@ -267,21 +312,23 @@ interface RoofTrussesProps {
 }
 
 export function RoofTrusses({ config }: RoofTrussesProps) {
-  const { width, depth, wallHeight, roofType, roofPitch } = config;
+  const { width, depth, wallHeight, roofType, roofPitch, roofOverhang } =
+    config;
 
   const trusses = useMemo(() => {
     if (roofType === "flat") return [];
 
     const trussPositions: number[] = [];
     const halfDepth = depth / 2;
-    let z = -halfDepth;
-    while (z <= halfDepth + 0.01) {
+    const inset = CHORD_W / 2; // keep end trusses inside wall face
+    let z = -halfDepth + inset;
+    while (z <= halfDepth - inset + 0.01) {
       trussPositions.push(z);
       z += TRUSS_SPACING;
     }
     // Ensure end trusses
-    if (trussPositions[trussPositions.length - 1] < halfDepth - 0.1) {
-      trussPositions.push(halfDepth);
+    if (trussPositions[trussPositions.length - 1] < halfDepth - inset - 0.1) {
+      trussPositions.push(halfDepth - inset);
     }
 
     return trussPositions.map((zPos) => {
@@ -291,7 +338,12 @@ export function RoofTrusses({ config }: RoofTrussesProps) {
 
       switch (roofType) {
         case "gable":
-          profile = generateGableTruss(width, roofPitch, trussBaseY);
+          profile = generateGableTruss(
+            width,
+            roofPitch,
+            trussBaseY,
+            roofOverhang,
+          );
           break;
         case "hip":
           profile = generateHipTrussAtPosition(
@@ -300,10 +352,16 @@ export function RoofTrusses({ config }: RoofTrussesProps) {
             roofPitch,
             trussBaseY,
             zPos,
+            roofOverhang,
           );
           break;
         case "shed":
-          profile = generateShedTruss(width, roofPitch, trussBaseY);
+          profile = generateShedTruss(
+            width,
+            roofPitch,
+            trussBaseY,
+            roofOverhang,
+          );
           break;
         default:
           profile = { members: [] };
@@ -311,7 +369,7 @@ export function RoofTrusses({ config }: RoofTrussesProps) {
 
       return { zPos, profile };
     });
-  }, [width, depth, wallHeight, roofType, roofPitch]);
+  }, [width, depth, wallHeight, roofType, roofPitch, roofOverhang]);
 
   const pineTexture = useMemo(() => getPineTexture(), []);
 

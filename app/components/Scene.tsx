@@ -15,11 +15,15 @@ import { WindowMeshes, DoorMeshes } from "./Openings";
 import { Foundation, Ground } from "./Foundation";
 import { WallStuds } from "./WallStuds";
 import { RoofTrusses } from "./RoofTrusses";
+import { RoofTiles } from "./RoofTiles";
+import { Dimensions } from "./Dimensions";
 
 function HouseModel() {
   const config = useHouseStore((s) => s.config);
   const showFraming = useHouseStore((s) => s.showFraming);
   const showVerticalTopPlate = useHouseStore((s) => s.showVerticalTopPlate);
+  const showTiles = useHouseStore((s) => s.showTiles);
+  const showDimensions = useHouseStore((s) => s.showDimensions);
 
   return (
     <group>
@@ -36,10 +40,16 @@ function HouseModel() {
         <>
           <Walls config={config} />
           <Roof config={config} />
+          <RoofTiles
+            config={config}
+            showTiles={showTiles}
+            showDimensions={showDimensions}
+          />
           <WindowMeshes config={config} />
           <DoorMeshes config={config} />
         </>
       )}
+      {showDimensions && <Dimensions config={config} />}
     </group>
   );
 }

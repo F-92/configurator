@@ -101,6 +101,8 @@ interface HouseStore {
   activeStep: number;
   showFraming: boolean;
   showVerticalTopPlate: boolean;
+  showTiles: boolean;
+  showDimensions: boolean;
 
   setConfig: (partial: Partial<HouseConfig>) => void;
   setRoofType: (type: RoofType) => void;
@@ -115,6 +117,8 @@ interface HouseStore {
   setActiveStep: (step: number) => void;
   toggleFraming: () => void;
   toggleVerticalTopPlate: () => void;
+  toggleTiles: () => void;
+  toggleDimensions: () => void;
   resetConfig: () => void;
 }
 
@@ -135,6 +139,8 @@ export const useHouseStore = create<HouseStore>()(
         activeStep: 0,
         showFraming: false,
         showVerticalTopPlate: false,
+        showTiles: true,
+        showDimensions: false,
 
         setConfig: (partial) =>
           set((state) => {
@@ -239,11 +245,18 @@ export const useHouseStore = create<HouseStore>()(
             showVerticalTopPlate: !state.showVerticalTopPlate,
           })),
 
+        toggleTiles: () => set((state) => ({ showTiles: !state.showTiles })),
+
+        toggleDimensions: () =>
+          set((state) => ({ showDimensions: !state.showDimensions })),
+
         resetConfig: () =>
           set({
             ...reconcile(DEFAULT_CONFIG),
             showFraming: false,
             showVerticalTopPlate: false,
+            showTiles: true,
+            showDimensions: false,
           }),
       };
     },

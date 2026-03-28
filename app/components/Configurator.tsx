@@ -38,6 +38,10 @@ export default function Configurator() {
   const toggleFraming = useHouseStore((s) => s.toggleFraming);
   const showVerticalTopPlate = useHouseStore((s) => s.showVerticalTopPlate);
   const toggleVerticalTopPlate = useHouseStore((s) => s.toggleVerticalTopPlate);
+  const showTiles = useHouseStore((s) => s.showTiles);
+  const toggleTiles = useHouseStore((s) => s.toggleTiles);
+  const showDimensions = useHouseStore((s) => s.showDimensions);
+  const toggleDimensions = useHouseStore((s) => s.toggleDimensions);
 
   return (
     <div className="flex flex-col lg:flex-row h-full w-full bg-zinc-900">
@@ -137,6 +141,43 @@ export default function Configurator() {
               Stående hammarband
             </button>
           )}
+          {!showFraming && (
+            <button
+              onClick={toggleTiles}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors backdrop-blur ${
+                showTiles
+                  ? "bg-amber-400/90 text-zinc-900 hover:bg-amber-300"
+                  : "bg-zinc-800/80 text-zinc-300 border border-zinc-600 hover:bg-zinc-700"
+              }`}
+            >
+              {showTiles ? "Dölj pannor" : "Visa pannor"}
+            </button>
+          )}
+          <button
+            onClick={toggleDimensions}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors backdrop-blur ${
+              showDimensions
+                ? "bg-amber-400/90 text-zinc-900 hover:bg-amber-300"
+                : "bg-zinc-800/80 text-zinc-300 border border-zinc-600 hover:bg-zinc-700"
+            }`}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <line x1="1" y1="13" x2="13" y2="13" />
+              <line x1="1" y1="11.5" x2="1" y2="13" />
+              <line x1="13" y1="11.5" x2="13" y2="13" />
+              <line x1="1" y1="1" x2="1" y2="10" />
+              <line x1="0" y1="1" x2="2" y2="1" />
+              <line x1="0" y1="10" x2="2" y2="10" />
+            </svg>
+            {showDimensions ? "Dölj mått" : "Visa mått"}
+          </button>
         </div>
       </main>
     </div>

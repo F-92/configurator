@@ -17,16 +17,18 @@ function createGableRoof(
 ) {
   const pitchRad = (pitch * Math.PI) / 180;
   const ridgeHeight = (width / 2) * Math.tan(pitchRad);
+  const eaveDrop = overhang * Math.tan(pitchRad);
 
   const hw = width / 2 + overhang;
   const hd = depth / 2 + overhang;
+  const eaveY = wallHeight - eaveDrop;
 
   // Left slope
   const leftGeo = new THREE.BufferGeometry();
   const slopeLength = hw / Math.cos(pitchRad);
   const leftVertices = new Float32Array([
     -hw,
-    wallHeight,
+    eaveY,
     -hd,
     0,
     wallHeight + ridgeHeight,
@@ -35,7 +37,7 @@ function createGableRoof(
     wallHeight + ridgeHeight,
     hd,
     -hw,
-    wallHeight,
+    eaveY,
     hd,
   ]);
   const leftIndices = [0, 1, 2, 0, 2, 3];
@@ -47,7 +49,7 @@ function createGableRoof(
   const rightGeo = new THREE.BufferGeometry();
   const rightVertices = new Float32Array([
     hw,
-    wallHeight,
+    eaveY,
     -hd,
     0,
     wallHeight + ridgeHeight,
@@ -56,7 +58,7 @@ function createGableRoof(
     wallHeight + ridgeHeight,
     hd,
     hw,
-    wallHeight,
+    eaveY,
     hd,
   ]);
   const rightIndices = [0, 2, 1, 0, 3, 2];
@@ -119,8 +121,10 @@ function createHipRoof(
 ) {
   const pitchRad = (pitch * Math.PI) / 180;
   const ridgeHeight = (width / 2) * Math.tan(pitchRad);
+  const eaveDrop = overhang * Math.tan(pitchRad);
   const hw = width / 2 + overhang;
   const hd = depth / 2 + overhang;
+  const eaveY = wallHeight - eaveDrop;
   const ridgeHalfLen = Math.max(0, hd - hw);
 
   const geometries: THREE.BufferGeometry[] = [];
@@ -129,10 +133,10 @@ function createHipRoof(
   const front = new THREE.BufferGeometry();
   const fv = new Float32Array([
     -hw,
-    wallHeight,
+    eaveY,
     hd,
     hw,
-    wallHeight,
+    eaveY,
     hd,
     ridgeHalfLen > 0 ? hw - overhang : 0,
     wallHeight + ridgeHeight,
@@ -150,10 +154,10 @@ function createHipRoof(
   const back = new THREE.BufferGeometry();
   const bv = new Float32Array([
     hw,
-    wallHeight,
+    eaveY,
     -hd,
     -hw,
-    wallHeight,
+    eaveY,
     -hd,
     ridgeHalfLen > 0 ? -(hw - overhang) : 0,
     wallHeight + ridgeHeight,
@@ -171,10 +175,10 @@ function createHipRoof(
   const left = new THREE.BufferGeometry();
   const lv = new Float32Array([
     -hw,
-    wallHeight,
+    eaveY,
     -hd,
     -hw,
-    wallHeight,
+    eaveY,
     hd,
     ridgeHalfLen > 0 ? -(hw - overhang) : 0,
     wallHeight + ridgeHeight,
@@ -192,10 +196,10 @@ function createHipRoof(
   const right = new THREE.BufferGeometry();
   const rv = new Float32Array([
     hw,
-    wallHeight,
+    eaveY,
     hd,
     hw,
-    wallHeight,
+    eaveY,
     -hd,
     ridgeHalfLen > 0 ? hw - overhang : 0,
     wallHeight + ridgeHeight,
@@ -221,22 +225,25 @@ function createShedRoof(
 ) {
   const pitchRad = (pitch * Math.PI) / 180;
   const rise = width * Math.tan(pitchRad);
+  const eaveDrop = overhang * Math.tan(pitchRad);
   const hw = width / 2 + overhang;
   const hd = depth / 2 + overhang;
+  const highY = wallHeight + rise + eaveDrop;
+  const lowY = wallHeight - eaveDrop;
 
   const geo = new THREE.BufferGeometry();
   const verts = new Float32Array([
     -hw,
-    wallHeight + rise,
+    highY,
     -hd,
     hw,
-    wallHeight,
+    lowY,
     -hd,
     hw,
-    wallHeight,
+    lowY,
     hd,
     -hw,
-    wallHeight + rise,
+    highY,
     hd,
   ]);
   geo.setAttribute("position", new THREE.BufferAttribute(verts, 3));
