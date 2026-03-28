@@ -122,7 +122,7 @@ function computeLayout(
   roofOverhang: number,
   flipStro: boolean,
 ): TileLayout {
-  const numCols = Math.max(1, Math.ceil(slopeWidth / TILE_COVER_W));
+  const numCols = Math.max(1, Math.floor(slopeWidth / TILE_COVER_W));
   const totalW = numCols * TILE_COVER_W;
   const xOff = (slopeWidth - totalW) / 2;
 

@@ -16,7 +16,7 @@ import { Foundation, Ground } from "./Foundation";
 import { WallStuds } from "./WallStuds";
 import { RoofTrusses } from "./RoofTrusses";
 import { RoofTiles } from "./RoofTiles";
-import { Dimensions } from "./Dimensions";
+import { Dimensions, FramingDimensions } from "./Dimensions";
 
 function HouseModel() {
   const config = useHouseStore((s) => s.config);
@@ -50,6 +50,7 @@ function HouseModel() {
         </>
       )}
       {showDimensions && <Dimensions config={config} />}
+      {showDimensions && showFraming && <FramingDimensions config={config} />}
     </group>
   );
 }

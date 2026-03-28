@@ -114,7 +114,7 @@ export function Dimensions({ config }: { config: HouseConfig }) {
   const oh = roofOverhang;
 
   // Extension lines (dashed) connecting building to dimension lines
-  const extColor = "#fbbf2480";
+  const extColor = "#fbf24880";
 
   return (
     <group>
@@ -255,6 +255,223 @@ export function Dimensions({ config }: { config: HouseConfig }) {
           <div style={LABEL_STYLE}>Takvinkel {fmtDeg(roofPitch)}</div>
         </Html>
       )}
+    </group>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// Framing dimensions — stud cc (600mm) along front wall,
+// truss cc (1200mm) along the depth
+// ════════════════════════════════════════════════════════════
+
+const STUD_CC = 0.6;
+const STUD_WIDTH = 0.045;
+const TRUSS_CC = 1.2;
+const TRUSS_CHORD_W = 0.045;
+
+const CC_LABEL: React.CSSProperties = {
+  fontSize: "11px",
+  fontWeight: 600,
+  color: "#22d3ee",
+  background: "rgba(24,24,27,0.85)",
+  padding: "1px 5px",
+  borderRadius: "3px",
+  whiteSpace: "nowrap",
+  pointerEvents: "none",
+  userSelect: "none",
+};
+
+function fmtCc(m: number): string {
+  return `${Math.round(m * 1000)} cc`;
+}
+
+export function FramingDimensions({ config }: { config: HouseConfig }) {
+  const { width, depth, wallHeight } = config;
+
+  const hw = width / 2;
+  const hd = depth / 2;
+  const dimY = -0.15; // just below floor (for studs)
+  const trussDimY = wallHeight; // at truss height
+
+  // ── Stud positions along front wall (Z = +hd) ──
+  const studPositions: number[] = [];
+  studPositions.push(-hw + STUD_WIDTH / 2);
+  let sx = -hw + STUD_CC;
+  while (sx < hw - STUD_WIDTH / 2 - 0.01) {
+    studPositions.push(sx);
+    sx += STUD_CC;
+  }
+  studPositions.push(hw - STUD_WIDTH / 2);
+
+  // ── Truss positions along depth ──
+  const trussInset = TRUSS_CHORD_W / 2;
+  const trussPositions: number[] = [];
+  let tz = -hd + trussInset;
+  while (tz <= hd - trussInset + 0.01) {
+    trussPositions.push(tz);
+    tz += TRUSS_CC;
+  }
+  const lastTrussTarget = hd - trussInset;
+  if (
+    trussPositions.length === 0 ||
+    lastTrussTarget - trussPositions[trussPositions.length - 1] > 0.1
+  ) {
+    trussPositions.push(lastTrussTarget);
+  }
+
+  const ccTick = 0.08;
+
+  return (
+    <group>
+      {/* ── Stud cc (along front wall X-axis, at Z = hd + offset) ── */}
+      {studPositions.length >= 2 &&
+        (() => {
+          const dimZ = hd + 0.5;
+          const maxShow = Math.min(4, studPositions.length - 1);
+          const elements: React.ReactNode[] = [];
+          for (let i = 0; i < studPositions.length - 1; i++) {
+            const x0 = studPositions[i];
+            const x1 = studPositions[i + 1];
+            const cc = x1 - x0;
+            const midX = (x0 + x1) / 2;
+            elements.push(
+              <group key={`stud-cc-${i}`}>
+                <Line
+                  points={[
+                    [x0, dimY, dimZ],
+                    [x1, dimY, dimZ],
+                  ]}
+                  color="#22d3ee"
+                  lineWidth={1.5}
+                  depthTest={false}
+                  renderOrder={999}
+                />
+                <Line
+                  points={[
+                    [x0, dimY, dimZ - ccTick],
+                    [x0, dimY, dimZ + ccTick],
+                  ]}
+                  color="#22d3ee"
+                  lineWidth={1.5}
+                  depthTest={false}
+                  renderOrder={999}
+                />
+                <Line
+                  points={[
+                    [x1, dimY, dimZ - ccTick],
+                    [x1, dimY, dimZ + ccTick],
+                  ]}
+                  color="#22d3ee"
+                  lineWidth={1.5}
+                  depthTest={false}
+                  renderOrder={999}
+                />
+                <Html
+                  position={[midX, dimY, dimZ]}
+                  center
+                  style={{ pointerEvents: "none" }}
+                >
+                  <div style={CC_LABEL}>Regelstomme {fmtCc(cc)}</div>
+                </Html>
+              </group>,
+            );
+          }
+          // Label for remaining studs
+          if (studPositions.length - 1 > maxShow) {
+            elements.push(
+              <Html
+                key="stud-more"
+                position={[studPositions[maxShow], dimY, dimZ + 0.25]}
+                center
+                style={{ pointerEvents: "none" }}
+              >
+                <div style={CC_LABEL}>
+                  …+{studPositions.length - 1 - maxShow} st
+                </div>
+              </Html>,
+            );
+          }
+          return <>{elements}</>;
+        })()}
+
+      {/* ── Truss cc (along depth Z-axis, at X = hw + offset) ── */}
+      {trussPositions.length >= 2 &&
+        (() => {
+          const dimX = hw + 0.5;
+          const maxShow = Math.min(3, trussPositions.length - 1);
+          const elements: React.ReactNode[] = [];
+          for (let i = 0; i < trussPositions.length - 1; i++) {
+            const z0 = trussPositions[i];
+            const z1 = trussPositions[i + 1];
+            const cc = z1 - z0;
+            const midZ = (z0 + z1) / 2;
+            elements.push(
+              <group key={`truss-cc-${i}`}>
+                <Line
+                  points={[
+                    [dimX, trussDimY, z0],
+                    [dimX, trussDimY, z1],
+                  ]}
+                  color="#22d3ee"
+                  lineWidth={1.5}
+                  depthTest={false}
+                  renderOrder={999}
+                />
+                <Line
+                  points={[
+                    [dimX - ccTick, trussDimY, z0],
+                    [dimX + ccTick, trussDimY, z0],
+                  ]}
+                  color="#22d3ee"
+                  lineWidth={1.5}
+                  depthTest={false}
+                  renderOrder={999}
+                />
+                <Line
+                  points={[
+                    [dimX - ccTick, trussDimY, z1],
+                    [dimX + ccTick, trussDimY, z1],
+                  ]}
+                  color="#22d3ee"
+                  lineWidth={1.5}
+                  depthTest={false}
+                  renderOrder={999}
+                />
+                <Html
+                  position={[dimX, trussDimY, midZ]}
+                  center
+                  style={{ pointerEvents: "none" }}
+                >
+                  <div style={CC_LABEL}>Takstol {fmtCc(cc)}</div>
+                </Html>
+              </group>,
+            );
+          }
+          if (trussPositions.length - 1 > maxShow) {
+            elements.push(
+              <Html
+                key="truss-more"
+                position={[dimX + 0.25, trussDimY, trussPositions[maxShow]]}
+                center
+                style={{ pointerEvents: "none" }}
+              >
+                <div style={CC_LABEL}>
+                  …+{trussPositions.length - 1 - maxShow} st
+                </div>
+              </Html>,
+            );
+          }
+          return <>{elements}</>;
+        })()}
+
+      {/* ── Wall height label ── */}
+      <Html
+        position={[hw + 0.5, wallHeight / 2, hd + 0.5]}
+        center
+        style={{ pointerEvents: "none" }}
+      >
+        <div style={CC_LABEL}>Vägg {fmt(wallHeight)}</div>
+      </Html>
     </group>
   );
 }
