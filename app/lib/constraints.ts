@@ -1,0 +1,179 @@
+import {
+  HouseConfig,
+  ConstraintViolation,
+  LIMITS,
+  WindowConfig,
+  DoorConfig,
+} from "./types";
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getWallLength(
+  config: HouseConfig,
+  wall: WindowConfig["wall"],
+): number {
+  return wall === "front" || wall === "back" ? config.width : config.depth;
+}
+
+function validateWindow(
+  window: WindowConfig,
+  config: HouseConfig,
+): { window: WindowConfig; violations: ConstraintViolation[] } {
+  const violations: ConstraintViolation[] = [];
+  const corrected = { ...window };
+  const wallLength = getWallLength(config, window.wall);
+
+  // Clamp window dimensions
+  corrected.width = clamp(
+    window.width,
+    LIMITS.windowWidth.min,
+    Math.min(LIMITS.windowWidth.max, wallLength - 0.4),
+  );
+  corrected.height = clamp(
+    window.height,
+    LIMITS.windowHeight.min,
+    Math.min(LIMITS.windowHeight.max, config.wallHeight - 0.4),
+  );
+
+  if (corrected.width !== window.width) {
+    violations.push({
+      field: `window.${window.id}.width`,
+      message: `Window width adjusted to fit wall`,
+      correctedValue: corrected.width,
+    });
+  }
+  if (corrected.height !== window.height) {
+    violations.push({
+      field: `window.${window.id}.height`,
+      message: `Window height adjusted to fit wall`,
+      correctedValue: corrected.height,
+    });
+  }
+
+  // Ensure window fits on wall
+  const maxPosX = 1 - corrected.width / wallLength;
+  corrected.positionX = clamp(
+    window.positionX,
+    corrected.width / wallLength / 2,
+    maxPosX + corrected.width / wallLength / 2,
+  );
+
+  // Ensure window doesn't go above wall
+  const maxPosY = config.wallHeight - corrected.height;
+  corrected.positionY = clamp(window.positionY, 0.2, maxPosY);
+
+  return { window: corrected, violations };
+}
+
+function validateDoor(
+  door: DoorConfig,
+  config: HouseConfig,
+): { door: DoorConfig; violations: ConstraintViolation[] } {
+  const violations: ConstraintViolation[] = [];
+  const corrected = { ...door };
+  const wallLength = getWallLength(config, door.wall);
+
+  corrected.width = clamp(
+    door.width,
+    LIMITS.doorWidth.min,
+    Math.min(LIMITS.doorWidth.max, wallLength - 0.4),
+  );
+  corrected.height = clamp(
+    door.height,
+    LIMITS.doorHeight.min,
+    Math.min(LIMITS.doorHeight.max, config.wallHeight),
+  );
+
+  if (corrected.width !== door.width) {
+    violations.push({
+      field: `door.${door.id}.width`,
+      message: `Door width adjusted`,
+      correctedValue: corrected.width,
+    });
+  }
+
+  const maxPosX = 1 - corrected.width / wallLength;
+  corrected.positionX = clamp(
+    door.positionX,
+    corrected.width / wallLength / 2,
+    maxPosX + corrected.width / wallLength / 2,
+  );
+
+  return { door: corrected, violations };
+}
+
+export function applyConstraints(config: HouseConfig): {
+  config: HouseConfig;
+  violations: ConstraintViolation[];
+} {
+  const violations: ConstraintViolation[] = [];
+  const corrected = { ...config };
+
+  // Clamp building dimensions
+  corrected.width = clamp(config.width, LIMITS.width.min, LIMITS.width.max);
+  corrected.depth = clamp(config.depth, LIMITS.depth.min, LIMITS.depth.max);
+  corrected.wallHeight = clamp(
+    config.wallHeight,
+    LIMITS.wallHeight.min,
+    LIMITS.wallHeight.max,
+  );
+
+  if (corrected.width !== config.width) {
+    violations.push({
+      field: "width",
+      message: `Width clamped to ${corrected.width}m`,
+      correctedValue: corrected.width,
+    });
+  }
+  if (corrected.depth !== config.depth) {
+    violations.push({
+      field: "depth",
+      message: `Depth clamped to ${corrected.depth}m`,
+      correctedValue: corrected.depth,
+    });
+  }
+
+  // Roof constraints
+  if (corrected.roofType === "flat") {
+    corrected.roofPitch = 0;
+  } else {
+    corrected.roofPitch = clamp(config.roofPitch, 10, LIMITS.roofPitch.max);
+  }
+  corrected.roofOverhang = clamp(
+    config.roofOverhang,
+    LIMITS.roofOverhang.min,
+    LIMITS.roofOverhang.max,
+  );
+
+  // Structural constraint: wide spans with steep roofs need limits
+  if (
+    corrected.width > 12 &&
+    corrected.roofType === "gable" &&
+    corrected.roofPitch > 35
+  ) {
+    corrected.roofPitch = 35;
+    violations.push({
+      field: "roofPitch",
+      message: "Pitch reduced for wide span",
+      correctedValue: 35,
+    });
+  }
+
+  // Validate windows
+  corrected.windows = config.windows.map((w) => {
+    const result = validateWindow(w, corrected);
+    violations.push(...result.violations);
+    return result.window;
+  });
+
+  // Validate doors
+  corrected.doors = config.doors.map((d) => {
+    const result = validateDoor(d, corrected);
+    violations.push(...result.violations);
+    return result.door;
+  });
+
+  return { config: corrected, violations };
+}
