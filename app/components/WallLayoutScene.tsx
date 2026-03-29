@@ -2,7 +2,12 @@
 
 import { useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, PerspectiveCamera, Grid } from "@react-three/drei";
+import {
+  OrbitControls,
+  PerspectiveCamera,
+  Grid,
+  Text,
+} from "@react-three/drei";
 import * as THREE from "three";
 import {
   WallLayout,
@@ -19,6 +24,10 @@ const WALL_HEIGHT = 2700; // mm
 const PLATE_HEIGHT = 45; // mm
 const STUD_COLOR = "#f5e6c8";
 const WALL_SURFACE_COLOR = "#dfc4a0";
+const OUTSIDE_INSULATION_OPTIONS = [0, 30, 50, 80, 95] as const;
+const INSULATION_SHEET_WIDTH = 1200; // mm
+const INSULATION_SHEET_HEIGHT = 2700; // mm
+const HOUSE_WRAP_THICKNESS = 2; // mm visual membrane thickness
 
 // ---- Preset Layouts ----
 
@@ -289,6 +298,272 @@ function WallSurface({
   );
 }
 
+/** Exterior insulation rendered as ROCKWOOL-like sheets, projected outward from the framing wall */
+function WallInsulationSheets({
+  wall,
+  wallHeight,
+  thickness,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  thickness: number;
+}) {
+  const sheets = useMemo(() => {
+    const result: {
+      key: string;
+      pos: [number, number, number];
+      size: [number, number, number];
+      color: string;
+    }[] = [];
+
+    if (thickness <= 0) return result;
+
+    const centerlineLength = wall.centerlineLength;
+    const wallHeightMm = wallHeight;
+    const depthM = thickness * MM;
+    const wallThicknessM = wall.thickness * MM;
+    const zCenter = -(wallThicknessM / 2 + depthM / 2) - 0.001;
+    const startCornerTrim = Math.max(wall.startCorner.retraction, 0);
+    const startConvexExtension =
+      wall.startCorner.interiorAngle <= Math.PI &&
+      wall.startCorner.joint === "butt"
+        ? thickness
+        : 0;
+    const endConvexExtension =
+      wall.endCorner.interiorAngle <= Math.PI && wall.endCorner.joint === "butt"
+        ? thickness
+        : 0;
+    const startReflexInset =
+      wall.startCorner.interiorAngle > Math.PI &&
+      wall.startCorner.joint === "butt"
+        ? thickness
+        : 0;
+    const endReflexInset =
+      wall.endCorner.interiorAngle > Math.PI && wall.endCorner.joint === "butt"
+        ? thickness
+        : 0;
+    const coverageStart =
+      -startCornerTrim - startConvexExtension + startReflexInset;
+    const coverageEnd =
+      -startCornerTrim + centerlineLength + endConvexExtension - endReflexInset;
+
+    let yStart = 0;
+    let rowIndex = 0;
+    while (yStart < wallHeightMm - 0.001) {
+      const sheetHeight = Math.min(
+        INSULATION_SHEET_HEIGHT,
+        wallHeightMm - yStart,
+      );
+      let sheetIndex = 0;
+
+      while (true) {
+        const rawStart = coverageStart + sheetIndex * INSULATION_SHEET_WIDTH;
+        const rawEnd = rawStart + INSULATION_SHEET_WIDTH;
+
+        if (rawStart >= coverageEnd - 0.001) break;
+
+        const clippedStart = Math.max(rawStart, coverageStart);
+        const clippedEnd = Math.min(rawEnd, coverageEnd);
+        const sheetWidth = clippedEnd - clippedStart;
+        const tone = (rowIndex + sheetIndex) % 2 === 0 ? "#8f7650" : "#9b8159";
+
+        if (sheetWidth <= 0.001) {
+          sheetIndex += 1;
+          continue;
+        }
+
+        result.push({
+          key: `ins-${rowIndex}-${sheetIndex}`,
+          pos: [
+            (clippedStart + sheetWidth / 2) * MM,
+            (yStart + sheetHeight / 2) * MM,
+            zCenter,
+          ],
+          size: [sheetWidth * MM, sheetHeight * MM, depthM],
+          color: tone,
+        });
+
+        sheetIndex += 1;
+      }
+
+      yStart += INSULATION_SHEET_HEIGHT;
+      rowIndex += 1;
+    }
+
+    return result;
+  }, [thickness, wall, wallHeight]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  if (thickness <= 0) return null;
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {sheets.map((sheet) => (
+        <group key={sheet.key} position={sheet.pos}>
+          <mesh castShadow receiveShadow>
+            <boxGeometry args={sheet.size} />
+            <meshStandardMaterial
+              color={sheet.color}
+              roughness={0.95}
+              metalness={0}
+            />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(...sheet.size)]} />
+            <lineBasicMaterial color="#5a452d" linewidth={1} />
+          </lineSegments>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+/** Thin breathable membrane wrapped around the framing exterior */
+function WallHouseWrap({
+  wall,
+  wallHeight,
+}: {
+  wall: Wall;
+  wallHeight: number;
+}) {
+  const wrapMesh = useMemo(() => {
+    const wrapLen = wall.centerlineLength * MM;
+    const wrapThickness = HOUSE_WRAP_THICKNESS * MM;
+    const framingDepth = wall.thickness * MM;
+    const wallH = wallHeight * MM;
+    const wrapStart = -wall.startCorner.retraction * MM;
+
+    return {
+      pos: [
+        wrapStart + wrapLen / 2,
+        wallH / 2,
+        -(framingDepth / 2 + wrapThickness / 2),
+      ] as [number, number, number],
+      size: [wrapLen, wallH, wrapThickness] as [number, number, number],
+    };
+  }, [wall, wallHeight]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      <group position={wrapMesh.pos}>
+        <mesh renderOrder={1}>
+          <boxGeometry args={wrapMesh.size} />
+          <meshStandardMaterial
+            color="#e1e1e1"
+            transparent
+            opacity={0.85}
+            roughness={0.9}
+            metalness={0}
+          />
+        </mesh>
+        <lineSegments>
+          <edgesGeometry args={[new THREE.BoxGeometry(...wrapMesh.size)]} />
+          <lineBasicMaterial color="#e1e1e1" linewidth={1} />
+        </lineSegments>
+      </group>
+    </group>
+  );
+}
+
+/** Thin vapor barrier on the interior face of the framing */
+function WallVaporBarrier({
+  wall,
+  wallHeight,
+}: {
+  wall: Wall;
+  wallHeight: number;
+}) {
+  const barrierMesh = useMemo(() => {
+    const studThickness = wall.thickness * MM;
+    const startOuterInset =
+      wall.startCorner.joint === "through" &&
+      wall.startCorner.interiorAngle <= Math.PI
+        ? studThickness
+        : 0;
+    const endOuterInset =
+      wall.endCorner.joint === "through" &&
+      wall.endCorner.interiorAngle <= Math.PI
+        ? studThickness
+        : 0;
+    const startInnerExtension =
+      wall.startCorner.joint === "through" &&
+      wall.startCorner.interiorAngle > Math.PI
+        ? studThickness
+        : 0;
+    const endInnerExtension =
+      wall.endCorner.joint === "through" &&
+      wall.endCorner.interiorAngle > Math.PI
+        ? studThickness
+        : 0;
+    const coverageStart = startOuterInset - startInnerExtension;
+    const coverageEnd =
+      wall.effectiveLength * MM - endOuterInset + endInnerExtension;
+    const barrierLen = Math.max(coverageEnd - coverageStart, 0.001);
+    const barrierThickness = HOUSE_WRAP_THICKNESS * MM;
+    const framingDepth = wall.thickness * MM;
+    const wallH = wallHeight * MM;
+
+    return {
+      pos: [
+        coverageStart + barrierLen / 2,
+        wallH / 2,
+        framingDepth / 2 + barrierThickness / 2,
+      ] as [number, number, number],
+      size: [barrierLen, wallH, barrierThickness] as [number, number, number],
+    };
+  }, [wall, wallHeight]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      <group position={barrierMesh.pos}>
+        <mesh renderOrder={1}>
+          <boxGeometry args={barrierMesh.size} />
+          <meshStandardMaterial
+            color="#72c2ff"
+            transparent
+            opacity={0.4}
+            roughness={0.9}
+            metalness={0}
+          />
+        </mesh>
+        <lineSegments>
+          <edgesGeometry args={[new THREE.BoxGeometry(...barrierMesh.size)]} />
+          <lineBasicMaterial color="#72c2ff" linewidth={1} />
+        </lineSegments>
+      </group>
+    </group>
+  );
+}
+
 /** Floor slab visualisation */
 function FloorSlab({ layout }: { layout: WallLayout }) {
   const geometry = useMemo(() => {
@@ -412,14 +687,15 @@ function WallStudDimensions({ wall }: { wall: Wall }) {
     return new THREE.Vector3(cx, 0, cz);
   }, [wall]);
 
-  // Wall direction unit vector in 3D
-  const wallDir = useMemo(
-    () => new THREE.Vector3(wall.direction.x, 0, -wall.direction.y).normalize(),
-    [wall],
-  );
-
-  // Rotation angle around Y to align with wall direction
-  const rotY = useMemo(() => Math.atan2(wallDir.x, wallDir.z), [wallDir]);
+  const labelQuat = useMemo(() => {
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const textUp = outNormal.clone().normalize();
+    const textRight = new THREE.Vector3()
+      .crossVectors(textUp, worldUp)
+      .normalize();
+    const basis = new THREE.Matrix4().makeBasis(textRight, textUp, worldUp);
+    return new THREE.Quaternion().setFromRotationMatrix(basis);
+  }, [outNormal]);
 
   const dims = useMemo(() => {
     const result: {
@@ -430,7 +706,6 @@ function WallStudDimensions({ wall }: { wall: Wall }) {
     }[] = [];
 
     if (wall.studLayout.studs.length < 2) return result;
-    const q = wall.quad;
     // Direction from wall.start (outer corner) to wall.end
     const wdx = (wall.end.x - wall.start.x) * MM;
     const wdz = -(wall.end.y - wall.start.y) * MM;
@@ -476,12 +751,7 @@ function WallStudDimensions({ wall }: { wall: Wall }) {
 
   // Dashed line material (shared)
   const dashMat = useMemo(() => {
-    const mat = new THREE.LineDashedMaterial({
-      color: "#fbbf24",
-      dashSize: 0.06,
-      gapSize: 0.04,
-      linewidth: 1,
-    });
+    const mat = new THREE.LineBasicMaterial({ color: "#000000" });
     return mat;
   }, []);
 
@@ -498,16 +768,27 @@ function WallStudDimensions({ wall }: { wall: Wall }) {
 
   // Tick mark length (perpendicular to wall)
   const tickLen = 0.08;
+  const labelGap = 0.24;
 
   return (
     <group ref={groupRef}>
       {dims.map((d, i) => {
-        // Dashed line between stud positions
+        // Split the dimension line around the label so it stays readable.
+        const dimDir = d.endPos.clone().sub(d.startPos);
+        const dimLen = dimDir.length();
+        if (dimLen < 0.001) return null;
+
+        dimDir.normalize();
+        const gapHalf = Math.min(labelGap / 2, dimLen * 0.3);
+        const gapStart = d.midPos.clone().addScaledVector(dimDir, -gapHalf);
+        const gapEnd = d.midPos.clone().addScaledVector(dimDir, gapHalf);
+
         const dashGeo = new THREE.BufferGeometry().setFromPoints([
           d.startPos,
+          gapStart,
+          gapEnd,
           d.endPos,
         ]);
-        dashGeo.computeBoundingSphere();
 
         // Tick marks at start and end (perpendicular to wall along outward normal)
         const t1Start = d.startPos.clone().addScaledVector(outNormal, -tickLen);
@@ -524,18 +805,14 @@ function WallStudDimensions({ wall }: { wall: Wall }) {
           t2End,
         ]);
 
-        const tickMat = new THREE.LineBasicMaterial({ color: "#fbbf24" });
+        const tickMat = new THREE.LineBasicMaterial({ color: "#000000" });
         const tick1 = new THREE.Line(tick1Geo, tickMat);
         const tick2 = new THREE.Line(tick2Geo, tickMat);
 
         return (
           <group key={i}>
-            {/* Dashed dimension line */}
-            <lineSegments
-              geometry={dashGeo}
-              material={dashMat}
-              onUpdate={(self) => self.computeLineDistances()}
-            />
+            {/* Dimension line with label gap */}
+            <lineSegments geometry={dashGeo} material={dashMat} />
             {/* Tick at start */}
             <primitive object={tick1} />
             {/* Tick at end */}
@@ -547,44 +824,40 @@ function WallStudDimensions({ wall }: { wall: Wall }) {
                 d.midPos.y + 0.01,
                 d.midPos.z + outNormal.z * 0.02,
               ]}
-              rotation={[-Math.PI / 2, 0, -rotY + Math.PI / 2]}
+              quaternion={labelQuat}
             >
-              <mesh>
-                <planeGeometry args={[0.35, 0.12]} />
-                <meshBasicMaterial transparent opacity={0}>
-                  {/* invisible backing for text */}
-                </meshBasicMaterial>
-              </mesh>
-              <sprite scale={[0.4, 0.12, 1]}>
-                <spriteMaterial
-                  map={createDimTextTexture(d.label)}
-                  transparent
+              {/* <mesh>
+                <planeGeometry args={[0.4, 0.12]} />
+                <meshBasicMaterial
+                  color="#ffffff"
                   depthTest={false}
+                  depthWrite={false}
+                  side={THREE.DoubleSide}
+                  toneMapped={false}
+                  transparent
+                  opacity={0.96}
                 />
-              </sprite>
+              </mesh> */}
+              <Text
+                position={[0, 0, 0.001]}
+                fontSize={0.085}
+                color="#000000"
+                anchorX="center"
+                anchorY="middle"
+                renderOrder={2}
+                material-toneMapped={false}
+                material-depthTest={false}
+                material-depthWrite={false}
+                rotation={[0, 0, Math.PI]}
+              >
+                {d.label}
+              </Text>
             </group>
           </group>
         );
       })}
     </group>
   );
-}
-
-/** Create a text texture with transparent background for dimension labels */
-function createDimTextTexture(text: string): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 64;
-  const ctx = canvas.getContext("2d")!;
-  ctx.clearRect(0, 0, 256, 64);
-  ctx.fillStyle = "#fbbf24";
-  ctx.font = "bold 40px monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, 128, 32);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  return tex;
 }
 
 /** Stud spacing dimension lines — only visible for camera-facing walls */
@@ -600,15 +873,23 @@ function StudDimensions({ layout }: { layout: WallLayout }) {
 
 /** The complete 3D model of a WallLayout */
 function WallLayoutModel({
-  layout,
+  framingLayout,
+  shellLayout,
   wallHeight,
+  outsideInsulation,
+  showHouseWrap,
+  showVaporBarrier,
   showFraming,
   showLabels,
   showCorners,
   showStudDimensions,
 }: {
-  layout: WallLayout;
+  framingLayout: WallLayout;
+  shellLayout: WallLayout;
   wallHeight: number;
+  outsideInsulation: number;
+  showHouseWrap: boolean;
+  showVaporBarrier: boolean;
   showFraming: boolean;
   showLabels: boolean;
   showCorners: boolean;
@@ -616,9 +897,9 @@ function WallLayoutModel({
 }) {
   return (
     <group>
-      <FloorSlab layout={layout} />
+      <FloorSlab layout={shellLayout} />
 
-      {layout.walls.map((w) =>
+      {(showFraming ? framingLayout.walls : shellLayout.walls).map((w) =>
         showFraming ? (
           <WallFraming key={w.id} wall={w} wallHeight={wallHeight} />
         ) : (
@@ -631,9 +912,51 @@ function WallLayoutModel({
         ),
       )}
 
-      {showLabels && <WallLabels layout={layout} wallHeight={wallHeight} />}
-      {showCorners && <CornerMarkers layout={layout} showInner={showFraming} />}
-      {showStudDimensions && showFraming && <StudDimensions layout={layout} />}
+      {showFraming &&
+        showHouseWrap &&
+        framingLayout.walls.map((w) => (
+          <WallHouseWrap
+            key={`wrap-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+          />
+        ))}
+
+      {showFraming &&
+        showVaporBarrier &&
+        framingLayout.walls.map((w) => (
+          <WallVaporBarrier
+            key={`vapor-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+          />
+        ))}
+
+      {outsideInsulation > 0 &&
+        framingLayout.walls.map((w) => (
+          <WallInsulationSheets
+            key={`insulation-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+            thickness={outsideInsulation}
+          />
+        ))}
+
+      {showLabels && (
+        <WallLabels
+          layout={showFraming ? framingLayout : shellLayout}
+          wallHeight={wallHeight}
+        />
+      )}
+      {showCorners && (
+        <CornerMarkers
+          layout={showFraming ? framingLayout : shellLayout}
+          showInner={showFraming}
+        />
+      )}
+      {showStudDimensions && showFraming && (
+        <StudDimensions layout={framingLayout} />
+      )}
     </group>
   );
 }
@@ -644,15 +967,43 @@ export default function WallLayoutScene() {
   const [presetIndex, setPresetIndex] = useState(0);
   const [thickness, setThickness] = useState(145);
   const [studSpacing, setStudSpacing] = useState(600);
+  const [outsideInsulationIndex, setOutsideInsulationIndex] = useState(0);
   const [wallHeight, setWallHeight] = useState(WALL_HEIGHT);
   const [showFraming, setShowFraming] = useState(true);
+  const [showHouseWrap, setShowHouseWrap] = useState(false);
+  const [showVaporBarrier, setShowVaporBarrier] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showCorners, setShowCorners] = useState(false);
   const [showStudDimensions, setShowStudDimensions] = useState(true);
+  const outsideInsulation = OUTSIDE_INSULATION_OPTIONS[outsideInsulationIndex];
+
+  const baseOuterCorners = useMemo(() => {
+    return PRESETS[presetIndex].create(thickness, studSpacing).outerCorners;
+  }, [presetIndex, thickness, studSpacing]);
+
+  const shellLayout = useMemo(() => {
+    return new WallLayout(baseOuterCorners, {
+      thickness: thickness + outsideInsulation,
+      studSpacing,
+      studDepth: thickness,
+    });
+  }, [baseOuterCorners, outsideInsulation, studSpacing, thickness]);
+
+  const framingOuterCorners = useMemo(() => {
+    if (outsideInsulation === 0) return baseOuterCorners;
+    return new WallLayout(baseOuterCorners, {
+      thickness: outsideInsulation,
+      studSpacing,
+    }).innerCorners;
+  }, [baseOuterCorners, outsideInsulation, studSpacing]);
 
   const layout = useMemo(() => {
-    return PRESETS[presetIndex].create(thickness, studSpacing);
-  }, [presetIndex, thickness, studSpacing]);
+    return new WallLayout(framingOuterCorners, {
+      thickness,
+      studSpacing,
+      studDepth: thickness,
+    });
+  }, [framingOuterCorners, studSpacing, thickness]);
 
   // Camera target: center of the building footprint
   const cameraTarget = useMemo(() => {
@@ -708,15 +1059,15 @@ export default function WallLayoutScene() {
             </div>
           </div>
 
-          {/* Wall thickness */}
+          {/* Stud width */}
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-1">
-              Väggtjocklek: {thickness} mm
+              Stud width: {thickness} mm
             </label>
             <input
               type="range"
               min={95}
-              max={245}
+              max={220}
               step={25}
               value={thickness}
               onChange={(e) => setThickness(Number(e.target.value))}
@@ -724,9 +1075,10 @@ export default function WallLayoutScene() {
             />
             <div className="flex justify-between text-xs text-zinc-500 mt-1">
               <span>95mm</span>
+              <span>120mm</span>
               <span>145mm</span>
               <span>195mm</span>
-              <span>245mm</span>
+              <span>220mm</span>
             </div>
           </div>
 
@@ -749,6 +1101,29 @@ export default function WallLayoutScene() {
               <span>450</span>
               <span>600</span>
               <span>900</span>
+            </div>
+          </div>
+
+          {/* Outside insulation */}
+          <div>
+            <label className="block text-sm font-medium text-zinc-300 mb-1">
+              Outside insulation: {outsideInsulation} mm
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={OUTSIDE_INSULATION_OPTIONS.length - 1}
+              step={1}
+              value={outsideInsulationIndex}
+              onChange={(e) =>
+                setOutsideInsulationIndex(Number(e.target.value))
+              }
+              className="w-full accent-amber-400"
+            />
+            <div className="flex justify-between text-xs text-zinc-500 mt-1">
+              {OUTSIDE_INSULATION_OPTIONS.map((value) => (
+                <span key={value}>{value}mm</span>
+              ))}
             </div>
           </div>
 
@@ -779,6 +1154,16 @@ export default function WallLayoutScene() {
                   label: "Stomme",
                   checked: showFraming,
                   toggle: () => setShowFraming((v) => !v),
+                },
+                {
+                  label: "House wrap",
+                  checked: showHouseWrap,
+                  toggle: () => setShowHouseWrap((v) => !v),
+                },
+                {
+                  label: "Vapor barrier",
+                  checked: showVaporBarrier,
+                  toggle: () => setShowVaporBarrier((v) => !v),
                 },
                 {
                   label: "Väggetiketter",
@@ -817,6 +1202,7 @@ export default function WallLayoutScene() {
             <h3 className="text-sm font-medium text-zinc-300">Layoutinfo</h3>
             <div className="text-xs text-zinc-400 space-y-0.5">
               <div>Antal väggar: {layout.count}</div>
+              <div>Outside insulation: {outsideInsulation} mm</div>
               <div>
                 Ytterperimeter:{" "}
                 {(
@@ -903,8 +1289,12 @@ export default function WallLayoutScene() {
           <hemisphereLight args={["#f0f0ff", "#d4c9a8", 0.4]} />
 
           <WallLayoutModel
-            layout={layout}
+            framingLayout={layout}
+            shellLayout={shellLayout}
             wallHeight={wallHeight}
+            outsideInsulation={outsideInsulation}
+            showHouseWrap={showHouseWrap}
+            showVaporBarrier={showVaporBarrier}
             showFraming={showFraming}
             showLabels={showLabels}
             showCorners={showCorners}
