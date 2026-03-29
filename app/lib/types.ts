@@ -10,7 +10,7 @@ export type DoorStyle = "standard" | "french" | "sliding";
 
 export interface WindowConfig {
   id: string;
-  wall: "front" | "back" | "left" | "right";
+  wall: WallName;
   positionX: number; // 0-1 along wall
   positionY: number; // height from floor
   width: number; // meters
@@ -20,11 +20,28 @@ export interface WindowConfig {
 
 export interface DoorConfig {
   id: string;
-  wall: "front" | "back" | "left" | "right";
+  wall: WallName;
   positionX: number;
   width: number;
   height: number;
   style: DoorStyle;
+}
+
+export type WallName = "front" | "back" | "left" | "right";
+
+export interface HouseExtension {
+  id: string;
+  width: number; // extent along parent wall (meters)
+  depth: number; // how far it extends outward (meters)
+  wallHeight: number;
+  roofType: RoofType;
+  roofPitch: number;
+  roofOverhang: number;
+  parentId: string; // "main" or another extension id
+  parentWall: WallName;
+  position: number; // 0-1 along parent wall, 0.5 = center
+  windows: WindowConfig[];
+  doors: DoorConfig[];
 }
 
 export interface HouseConfig {
@@ -45,6 +62,9 @@ export interface HouseConfig {
   // Openings
   windows: WindowConfig[];
   doors: DoorConfig[];
+
+  // Extensions (additional house bodies attached to walls)
+  extensions: HouseExtension[];
 
   // Colors
   wallColor: string;

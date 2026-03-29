@@ -8,6 +8,7 @@ import {
   RoofPanel,
   WallsPanel,
   WindowsDoorsPanel,
+  ExtensionsPanel,
 } from "./ConfigPanel";
 import { PricePanel } from "./PricePanel";
 import { StepNav } from "./StepNav";
@@ -26,6 +27,8 @@ function ActivePanel() {
       return <WallsPanel />;
     case 3:
       return <WindowsDoorsPanel />;
+    case 4:
+      return <ExtensionsPanel />;
     default:
       return <DimensionsPanel />;
   }

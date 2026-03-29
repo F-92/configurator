@@ -34,7 +34,7 @@ const ROOF_MULTIPLIERS: Record<string, number> = {
   hip: 1.3,
 };
 
-export function calculatePrice(config: HouseConfig): PriceBreakdown {
+function calculateBasePrice(config: HouseConfig): PriceBreakdown {
   const floorArea = config.width * config.depth;
   const perimeter = 2 * (config.width + config.depth);
   const wallArea = perimeter * config.wallHeight;
@@ -72,6 +72,64 @@ export function calculatePrice(config: HouseConfig): PriceBreakdown {
   // Materials surcharge (transport, assembly overhead)
   const materials = Math.round((foundation + walls + roof) * 0.08);
 
+  const total = foundation + walls + roof + windows + doors + materials;
+
+  return { foundation, walls, roof, windows, doors, materials, total };
+}
+
+function calculateExtensionPrices(config: HouseConfig) {
+  let extFoundation = 0;
+  let extWalls = 0;
+  let extRoof = 0;
+  let extWindows = 0;
+  let extDoors = 0;
+
+  for (const ext of config.extensions ?? []) {
+    const floorArea = ext.width * ext.depth;
+    // 3 walls (back wall is shared with parent)
+    const wallPerimeter = ext.width + 2 * ext.depth;
+    const wallArea = wallPerimeter * ext.wallHeight;
+
+    extFoundation += Math.round(floorArea * BASE_PRICES.foundation);
+
+    const wallPricePerSqm = BASE_PRICES.wall[config.wallMaterial];
+    extWalls += Math.round(wallArea * wallPricePerSqm);
+
+    const pitchRadians = (ext.roofPitch * Math.PI) / 180;
+    const roofAreaFactor =
+      ext.roofType === "flat" ? 1 : 1 / Math.cos(pitchRadians);
+    const roofArea = ext.width * ext.depth * roofAreaFactor;
+    const roofMaterialPrice = BASE_PRICES.roof[config.roofMaterial];
+    const roofMultiplier = ROOF_MULTIPLIERS[ext.roofType] ?? 1;
+    extRoof += Math.round(roofArea * roofMaterialPrice * roofMultiplier);
+
+    extWindows += ext.windows.reduce((sum, w) => {
+      const basePrice = BASE_PRICES.window[w.style];
+      const sizeFactor = (w.width * w.height) / (1.2 * 1.2);
+      return sum + Math.round(basePrice * sizeFactor);
+    }, 0);
+
+    extDoors += ext.doors.reduce((sum, d) => {
+      const basePrice = BASE_PRICES.door[d.style];
+      const sizeFactor = (d.width * d.height) / (1.0 * 2.1);
+      return sum + Math.round(basePrice * sizeFactor);
+    }, 0);
+  }
+
+  return { extFoundation, extWalls, extRoof, extWindows, extDoors };
+}
+
+export function calculatePrice(config: HouseConfig): PriceBreakdown {
+  const base = calculateBasePrice(config);
+
+  const ext = calculateExtensionPrices(config);
+
+  const foundation = base.foundation + ext.extFoundation;
+  const walls = base.walls + ext.extWalls;
+  const roof = base.roof + ext.extRoof;
+  const windows = base.windows + ext.extWindows;
+  const doors = base.doors + ext.extDoors;
+  const materials = Math.round((foundation + walls + roof) * 0.08);
   const total = foundation + walls + roof + windows + doors + materials;
 
   return { foundation, walls, roof, windows, doors, materials, total };

@@ -9,18 +9,24 @@ import {
   RoofType,
   WallMaterial,
   RoofMaterial,
+  WallName,
+  HouseExtension,
 } from "./types";
 import { applyConstraints } from "./constraints";
 import { calculatePrice } from "./pricing";
 
 let nextWindowId = 1;
 let nextDoorId = 1;
+let nextExtensionId = 1;
 
 function makeWindowId() {
   return `w-${nextWindowId++}`;
 }
 function makeDoorId() {
   return `d-${nextDoorId++}`;
+}
+function makeExtensionId() {
+  return `ext-${nextExtensionId++}`;
 }
 
 const DEFAULT_CONFIG: HouseConfig = {
@@ -92,6 +98,7 @@ const DEFAULT_CONFIG: HouseConfig = {
   wallColor: "#c4956a",
   roofColor: "#8b0000",
   trimColor: "#ffffff",
+  extensions: [],
 };
 
 interface HouseStore {
@@ -120,6 +127,25 @@ interface HouseStore {
   toggleTiles: () => void;
   toggleDimensions: () => void;
   resetConfig: () => void;
+
+  // Extension actions
+  addExtension: (parentWall: WallName, parentId?: string) => void;
+  removeExtension: (id: string) => void;
+  updateExtension: (id: string, update: Partial<HouseExtension>) => void;
+  addExtensionWindow: (extensionId: string, wall: WallName) => void;
+  removeExtensionWindow: (extensionId: string, windowId: string) => void;
+  updateExtensionWindow: (
+    extensionId: string,
+    windowId: string,
+    update: Partial<WindowConfig>,
+  ) => void;
+  addExtensionDoor: (extensionId: string, wall: WallName) => void;
+  removeExtensionDoor: (extensionId: string, doorId: string) => void;
+  updateExtensionDoor: (
+    extensionId: string,
+    doorId: string,
+    update: Partial<DoorConfig>,
+  ) => void;
 }
 
 function reconcile(config: HouseConfig) {
@@ -231,6 +257,177 @@ export const useHouseStore = create<HouseStore>()(
               ...state.config,
               doors: state.config.doors.map((d) =>
                 d.id === id ? { ...d, ...update } : d,
+              ),
+            }),
+          ),
+
+        // Extension actions
+        addExtension: (parentWall, parentId = "main") =>
+          set((state) => {
+            const ext: HouseExtension = {
+              id: makeExtensionId(),
+              width: 4,
+              depth: 3,
+              wallHeight: state.config.wallHeight,
+              roofType: "shed",
+              roofPitch: 15,
+              roofOverhang: 0.3,
+              parentId,
+              parentWall,
+              position: 0.5,
+              windows: [],
+              doors: [],
+            };
+            return reconcile({
+              ...state.config,
+              extensions: [...state.config.extensions, ext],
+            });
+          }),
+
+        removeExtension: (id) =>
+          set((state) => {
+            // Also remove any extensions that were attached to this one
+            const removeIds = new Set<string>();
+            const gather = (targetId: string) => {
+              removeIds.add(targetId);
+              state.config.extensions
+                .filter((e) => e.parentId === targetId)
+                .forEach((e) => gather(e.id));
+            };
+            gather(id);
+            return reconcile({
+              ...state.config,
+              extensions: state.config.extensions.filter(
+                (e) => !removeIds.has(e.id),
+              ),
+            });
+          }),
+
+        updateExtension: (id, update) =>
+          set((state) =>
+            reconcile({
+              ...state.config,
+              extensions: state.config.extensions.map((e) =>
+                e.id === id
+                  ? {
+                      ...e,
+                      ...update,
+                      windows: update.windows ?? e.windows,
+                      doors: update.doors ?? e.doors,
+                    }
+                  : e,
+              ),
+            }),
+          ),
+
+        addExtensionWindow: (extensionId, wall) =>
+          set((state) =>
+            reconcile({
+              ...state.config,
+              extensions: state.config.extensions.map((e) =>
+                e.id === extensionId
+                  ? {
+                      ...e,
+                      windows: [
+                        ...e.windows,
+                        {
+                          id: makeWindowId(),
+                          wall,
+                          positionX: 0.5,
+                          positionY: 0.9,
+                          width: 1.0,
+                          height: 1.0,
+                          style: "standard" as const,
+                        },
+                      ],
+                    }
+                  : e,
+              ),
+            }),
+          ),
+
+        removeExtensionWindow: (extensionId, windowId) =>
+          set((state) =>
+            reconcile({
+              ...state.config,
+              extensions: state.config.extensions.map((e) =>
+                e.id === extensionId
+                  ? {
+                      ...e,
+                      windows: e.windows.filter((w) => w.id !== windowId),
+                    }
+                  : e,
+              ),
+            }),
+          ),
+
+        updateExtensionWindow: (extensionId, windowId, update) =>
+          set((state) =>
+            reconcile({
+              ...state.config,
+              extensions: state.config.extensions.map((e) =>
+                e.id === extensionId
+                  ? {
+                      ...e,
+                      windows: e.windows.map((w) =>
+                        w.id === windowId ? { ...w, ...update } : w,
+                      ),
+                    }
+                  : e,
+              ),
+            }),
+          ),
+
+        addExtensionDoor: (extensionId, wall) =>
+          set((state) =>
+            reconcile({
+              ...state.config,
+              extensions: state.config.extensions.map((e) =>
+                e.id === extensionId
+                  ? {
+                      ...e,
+                      doors: [
+                        ...e.doors,
+                        {
+                          id: makeDoorId(),
+                          wall,
+                          positionX: 0.5,
+                          width: 1.0,
+                          height: 2.1,
+                          style: "standard" as const,
+                        },
+                      ],
+                    }
+                  : e,
+              ),
+            }),
+          ),
+
+        removeExtensionDoor: (extensionId, doorId) =>
+          set((state) =>
+            reconcile({
+              ...state.config,
+              extensions: state.config.extensions.map((e) =>
+                e.id === extensionId
+                  ? { ...e, doors: e.doors.filter((d) => d.id !== doorId) }
+                  : e,
+              ),
+            }),
+          ),
+
+        updateExtensionDoor: (extensionId, doorId, update) =>
+          set((state) =>
+            reconcile({
+              ...state.config,
+              extensions: state.config.extensions.map((e) =>
+                e.id === extensionId
+                  ? {
+                      ...e,
+                      doors: e.doors.map((d) =>
+                        d.id === doorId ? { ...d, ...update } : d,
+                      ),
+                    }
+                  : e,
               ),
             }),
           ),

@@ -4,6 +4,7 @@ import {
   LIMITS,
   WindowConfig,
   DoorConfig,
+  HouseExtension,
 } from "./types";
 
 function clamp(value: number, min: number, max: number): number {
@@ -173,6 +174,68 @@ export function applyConstraints(config: HouseConfig): {
     const result = validateDoor(d, corrected);
     violations.push(...result.violations);
     return result.door;
+  });
+
+  // Validate extensions
+  corrected.extensions = (config.extensions ?? []).map((ext) => {
+    const corrExt = { ...ext };
+
+    // Get parent dimensions
+    const parentWidth =
+      ext.parentId === "main"
+        ? corrected.width
+        : ((corrected.extensions ?? []).find((e) => e.id === ext.parentId)
+            ?.width ?? corrected.width);
+    const parentDepth =
+      ext.parentId === "main"
+        ? corrected.depth
+        : ((corrected.extensions ?? []).find((e) => e.id === ext.parentId)
+            ?.depth ?? corrected.depth);
+    const parentWallLength =
+      ext.parentWall === "front" || ext.parentWall === "back"
+        ? parentWidth
+        : parentDepth;
+
+    // Clamp extension dimensions
+    corrExt.width = clamp(ext.width, 2, Math.min(parentWallLength, 20));
+    corrExt.depth = clamp(ext.depth, 2, 20);
+    corrExt.wallHeight = clamp(
+      ext.wallHeight,
+      LIMITS.wallHeight.min,
+      LIMITS.wallHeight.max,
+    );
+
+    // Ensure extension fits on parent wall
+    const halfExtW = corrExt.width / parentWallLength / 2;
+    corrExt.position = clamp(ext.position, halfExtW, 1 - halfExtW);
+
+    // Roof constraints
+    if (corrExt.roofType === "flat") {
+      corrExt.roofPitch = 0;
+    } else {
+      corrExt.roofPitch = clamp(ext.roofPitch, 5, LIMITS.roofPitch.max);
+    }
+    corrExt.roofOverhang = clamp(ext.roofOverhang, 0, LIMITS.roofOverhang.max);
+
+    // Validate extension windows
+    const extConfig: HouseConfig = {
+      ...corrected,
+      width: corrExt.width,
+      depth: corrExt.depth,
+      wallHeight: corrExt.wallHeight,
+    };
+    corrExt.windows = ext.windows.map((w) => {
+      const result = validateWindow(w, extConfig);
+      violations.push(...result.violations);
+      return result.window;
+    });
+    corrExt.doors = ext.doors.map((d) => {
+      const result = validateDoor(d, extConfig);
+      violations.push(...result.violations);
+      return result.door;
+    });
+
+    return corrExt;
   });
 
   return { config: corrected, violations };

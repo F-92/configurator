@@ -2,13 +2,30 @@
 
 import { useMemo } from "react";
 import * as THREE from "three";
-import { HouseConfig } from "../lib/types";
+import { HouseConfig, WallName } from "../lib/types";
+import { STUD_DEPTH } from "./WallStuds";
+
+export interface WallCut {
+  wall: WallName;
+  positionX: number; // 0-1 along wall
+  width: number; // meters
+  height: number; // meters
+}
 
 interface WallsProps {
   config: HouseConfig;
+  wallCuts?: WallCut[];
+  skipWalls?: WallName[];
+  /** Walls to hide from rendering without affecting geometry calculations */
+  hideWalls?: WallName[];
 }
 
-export function Walls({ config }: WallsProps) {
+export function Walls({
+  config,
+  wallCuts = [],
+  skipWalls = [],
+  hideWalls = [],
+}: WallsProps) {
   const { width, depth, wallHeight, wallColor, windows, doors } = config;
 
   const wallMeshes = useMemo(() => {
@@ -18,6 +35,15 @@ export function Walls({ config }: WallsProps) {
       rotation: [number, number, number];
       geometry: THREE.BufferGeometry;
     }[] = [];
+
+    // Extension butt walls extend through parent's wall thickness at junctions
+    const skipBack = skipWalls.includes("back");
+    const skipFront = skipWalls.includes("front");
+    const sideExtension =
+      (skipBack ? STUD_DEPTH : 0) + (skipFront ? STUD_DEPTH : 0);
+    const sideLength = depth + sideExtension;
+    const sideZShift =
+      ((skipFront ? STUD_DEPTH : 0) - (skipBack ? STUD_DEPTH : 0)) / 2;
 
     const wallDefs: {
       key: string;
@@ -43,24 +69,32 @@ export function Walls({ config }: WallsProps) {
       {
         key: "left",
         wallName: "left",
-        length: depth,
-        position: [-width / 2, wallHeight / 2, 0],
+        length: sideLength,
+        position: [-width / 2, wallHeight / 2, sideZShift],
         rotation: [0, Math.PI / 2, 0],
       },
       {
         key: "right",
         wallName: "right",
-        length: depth,
-        position: [width / 2, wallHeight / 2, 0],
+        length: sideLength,
+        position: [width / 2, wallHeight / 2, sideZShift],
         rotation: [0, -Math.PI / 2, 0],
       },
     ];
 
     for (const wd of wallDefs) {
+      if (skipWalls.includes(wd.wallName) || hideWalls.includes(wd.wallName))
+        continue;
+
       const wallWindows = windows.filter((w) => w.wall === wd.wallName);
       const wallDoors = doors.filter((d) => d.wall === wd.wallName);
+      const cuts = wallCuts.filter((c) => c.wall === wd.wallName);
 
-      if (wallWindows.length === 0 && wallDoors.length === 0) {
+      if (
+        wallWindows.length === 0 &&
+        wallDoors.length === 0 &&
+        cuts.length === 0
+      ) {
         const geo = new THREE.PlaneGeometry(wd.length, wallHeight);
         walls.push({
           key: wd.key,
@@ -105,6 +139,20 @@ export function Walls({ config }: WallsProps) {
           shape.holes.push(hole);
         }
 
+        // Cut extension connection holes
+        for (const cut of cuts) {
+          const cx = (cut.positionX - 0.5) * wd.length;
+          const cutH = Math.min(cut.height, wallHeight);
+          const cy = -hh + cutH / 2;
+          const hole = new THREE.Path();
+          hole.moveTo(cx - cut.width / 2, cy - cutH / 2);
+          hole.lineTo(cx + cut.width / 2, cy - cutH / 2);
+          hole.lineTo(cx + cut.width / 2, cy + cutH / 2);
+          hole.lineTo(cx - cut.width / 2, cy + cutH / 2);
+          hole.closePath();
+          shape.holes.push(hole);
+        }
+
         const geo = new THREE.ShapeGeometry(shape);
         walls.push({
           key: wd.key,
@@ -116,7 +164,16 @@ export function Walls({ config }: WallsProps) {
     }
 
     return walls;
-  }, [width, depth, wallHeight, windows, doors]);
+  }, [
+    width,
+    depth,
+    wallHeight,
+    windows,
+    doors,
+    wallCuts,
+    skipWalls,
+    hideWalls,
+  ]);
 
   return (
     <group>

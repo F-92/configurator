@@ -7,6 +7,7 @@ const STEPS = [
   { label: "Tak", icon: "🏠" },
   { label: "Fasad", icon: "🧱" },
   { label: "Fönster & Dörrar", icon: "🪟" },
+  { label: "Tillbyggnad", icon: "🧩" },
 ];
 
 export function StepNav() {
