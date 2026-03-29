@@ -167,7 +167,7 @@ function MergedWallFraming({
           <boxGeometry args={[stud.w, stud.h, stud.d]} />
           <meshStandardMaterial
             map={pineTexture}
-            color="#e8c88a"
+            color="#f5e6c8"
             roughness={0.85}
           />
         </mesh>
@@ -179,7 +179,7 @@ function MergedWallFraming({
           />
           <meshStandardMaterial
             map={pineTexture}
-            color="#e8c88a"
+            color="#f5e6c8"
             roughness={0.85}
           />
         </mesh>
@@ -190,7 +190,7 @@ function MergedWallFraming({
           <boxGeometry args={[STUD_DEPTH, b.h, STUD_WIDTH]} />
           <meshStandardMaterial
             map={pineTexture}
-            color="#e8c88a"
+            color="#f5e6c8"
             roughness={0.85}
           />
         </mesh>
@@ -398,7 +398,7 @@ function HouseModel() {
                   <boxGeometry args={backer.size} />
                   <meshStandardMaterial
                     map={pineTexture}
-                    color="#e8c88a"
+                    color="#f5e6c8"
                     roughness={0.85}
                   />
                 </mesh>

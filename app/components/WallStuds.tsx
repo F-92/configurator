@@ -535,7 +535,7 @@ export function WallStuds({
               <boxGeometry args={[stud.w, stud.h, stud.d]} />
               <meshStandardMaterial
                 map={pineTexture}
-                color="#e8c88a"
+                color="#f5e6c8"
                 roughness={0.85}
               />
             </mesh>
@@ -557,7 +557,7 @@ export function WallStuds({
               />
               <meshStandardMaterial
                 map={pineTexture}
-                color="#e8c88a"
+                color="#f5e6c8"
                 roughness={0.85}
               />
             </mesh>
@@ -570,7 +570,7 @@ export function WallStuds({
           <boxGeometry args={b.size} />
           <meshStandardMaterial
             map={pineTexture}
-            color="#e8c88a"
+            color="#f5e6c8"
             roughness={0.85}
           />
         </mesh>

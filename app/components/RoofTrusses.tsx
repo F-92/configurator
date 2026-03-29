@@ -392,7 +392,7 @@ export function RoofTrusses({ config }: RoofTrussesProps) {
               <boxGeometry args={[length, member.thickness, CHORD_W]} />
               <meshStandardMaterial
                 map={pineTexture}
-                color="#e8c88a"
+                color="#f5e6c8"
                 roughness={0.85}
               />
             </mesh>
@@ -414,7 +414,7 @@ export function RoofTrusses({ config }: RoofTrussesProps) {
           <boxGeometry args={[CHORD_W * 2, CHORD_H, depth]} />
           <meshStandardMaterial
             map={pineTexture}
-            color="#e8c88a"
+            color="#f5e6c8"
             roughness={0.85}
           />
         </mesh>
@@ -468,7 +468,7 @@ function Purlins({ config }: { config: HouseConfig }) {
           <boxGeometry args={[CHORD_W, WEB_H, purlin.len]} />
           <meshStandardMaterial
             map={pineTexture}
-            color="#e8c88a"
+            color="#f5e6c8"
             roughness={0.85}
           />
         </mesh>
