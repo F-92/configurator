@@ -1,6 +1,7 @@
 import * as THREE from "three";
 
 let cachedTexture: THREE.CanvasTexture | null = null;
+let cachedOsbTexture: THREE.CanvasTexture | null = null;
 
 /** Seeded PRNG for deterministic textures */
 function mulberry32(seed: number) {
@@ -118,5 +119,98 @@ export function getPineTexture(): THREE.CanvasTexture {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
   cachedTexture = texture;
+  return texture;
+}
+
+/** Procedural OSB board texture with layered wood flakes */
+export function getOsbTexture(): THREE.CanvasTexture {
+  if (cachedOsbTexture) return cachedOsbTexture;
+
+  const rand = mulberry32(1337);
+  const size = 1024;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  ctx.fillStyle = "#ead2ad";
+  ctx.fillRect(0, 0, size, size);
+
+  for (let i = 0; i < 18; i++) {
+    const gx = rand() * size;
+    const gy = rand() * size;
+    const radius = 80 + rand() * 180;
+    const gradient = ctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
+    gradient.addColorStop(0, `rgba(184, 145, 92, ${0.05 + rand() * 0.06})`);
+    gradient.addColorStop(1, "rgba(184, 145, 92, 0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+  }
+
+  const flakeColors = [
+    "rgba(214, 180, 129, 0.5)",
+    "rgba(198, 161, 110, 0.46)",
+    "rgba(181, 139, 86, 0.4)",
+    "rgba(232, 204, 157, 0.34)",
+  ];
+
+  for (let i = 0; i < 2200; i++) {
+    const x = rand() * size;
+    const y = rand() * size;
+    const width = 18 + rand() * 72;
+    const height = 4 + rand() * 12;
+    const angle = rand() * Math.PI * 2;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+
+    ctx.fillStyle = flakeColors[Math.floor(rand() * flakeColors.length)];
+    ctx.beginPath();
+    ctx.moveTo(-width / 2, -height / 2);
+    ctx.lineTo(width / 2, -height * (0.3 + rand() * 0.4));
+    ctx.lineTo(width / 2, height / 2);
+    ctx.lineTo(-width / 2, height * (0.3 + rand() * 0.4));
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(125, 88, 48, ${0.025 + rand() * 0.04})`;
+    ctx.lineWidth = 0.6 + rand() * 0.8;
+    ctx.stroke();
+
+    if (rand() > 0.6) {
+      ctx.strokeStyle = `rgba(248, 228, 188, ${0.04 + rand() * 0.04})`;
+      ctx.lineWidth = 0.4;
+      ctx.beginPath();
+      ctx.moveTo(-width * 0.35, 0);
+      ctx.lineTo(width * 0.35, 0);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  for (let i = 0; i < 160; i++) {
+    ctx.fillStyle = `rgba(126, 91, 52, ${0.015 + rand() * 0.025})`;
+    ctx.fillRect(rand() * size, rand() * size, 8 + rand() * 26, 1 + rand() * 3);
+  }
+
+  const imgData = ctx.getImageData(0, 0, size, size);
+  const px = imgData.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const noise = (rand() - 0.5) * 8 + 8;
+    px[i] = Math.min(255, Math.max(0, px[i] + noise));
+    px[i + 1] = Math.min(255, Math.max(0, px[i + 1] + noise));
+    px[i + 2] = Math.min(255, Math.max(0, px[i + 2] + noise));
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  cachedOsbTexture = texture;
   return texture;
 }

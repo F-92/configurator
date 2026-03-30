@@ -16,7 +16,7 @@ import {
   traceLayout,
 } from "../lib/wallLayout";
 import type { Wall } from "../lib/wallLayout";
-import { getPineTexture } from "../lib/woodTexture";
+import { getOsbTexture, getPineTexture } from "../lib/woodTexture";
 
 // ---- Constants ----
 const MM = 0.001; // mm → meters for Three.js
@@ -31,6 +31,9 @@ const INSTALLATION_LAYER_OPTIONS = [0, 45, 70] as const;
 const INSTALLATION_LAYER_STUD_LENGTH_OPTIONS = [
   2400, 3000, 3600, 4200,
 ] as const;
+const OSB_BOARD_WIDTH = 1200; // mm
+const OSB_BOARD_HEIGHT = 2700; // mm
+const OSB_BOARD_THICKNESS = 11; // mm
 const INSULATION_SHEET_WIDTH = 1200; // mm
 const INSULATION_SHEET_HEIGHT = 2700; // mm
 const CAVITY_INSULATION_SHEET_HEIGHT = 1170; // mm
@@ -682,11 +685,13 @@ function WallCavityInsulation({
 /** Interior installation layer studs placed inside the vapor barrier */
 function WallInstallationLayer({
   wall,
+  framingWall,
   wallHeight,
   thickness,
   maxStudLength,
 }: {
   wall: Wall;
+  framingWall: Wall;
   wallHeight: number;
   thickness: number;
   maxStudLength: number;
@@ -708,61 +713,24 @@ function WallInstallationLayer({
     const studSpacing = 600;
     const studWidthM = studWidth * MM;
     const studDepthM = studDepth * MM;
-    const layerCenterZ =
-      (wall.thickness * MM) / 2 + HOUSE_WRAP_THICKNESS * MM + studDepthM / 2;
-    const startOuterInset =
-      wall.startCorner.joint === "through" &&
-      wall.startCorner.interiorAngle <= Math.PI
-        ? wall.thickness
-        : 0;
-    const endOuterInset =
-      wall.endCorner.joint === "through" &&
-      wall.endCorner.interiorAngle <= Math.PI
-        ? wall.thickness
-        : 0;
-    const startInnerExtension =
-      wall.startCorner.joint === "through" &&
-      wall.startCorner.interiorAngle > Math.PI
-        ? wall.thickness
-        : 0;
-    const endInnerExtension =
-      wall.endCorner.joint === "through" &&
-      wall.endCorner.interiorAngle > Math.PI
-        ? wall.thickness
-        : 0;
-    const startConvexInset =
-      wall.startCorner.joint === "butt" &&
-      wall.startCorner.interiorAngle <= Math.PI
-        ? thickness
-        : 0;
-    const endConvexInset =
-      wall.endCorner.joint === "butt" && wall.endCorner.interiorAngle <= Math.PI
-        ? thickness
-        : 0;
-    const startReflexExtension =
-      wall.startCorner.joint === "butt" &&
-      wall.startCorner.interiorAngle > Math.PI
-        ? thickness
-        : 0;
-    const endReflexExtension =
-      wall.endCorner.joint === "butt" && wall.endCorner.interiorAngle > Math.PI
-        ? thickness
-        : 0;
-    const coverageStart =
-      startOuterInset -
-      startInnerExtension +
-      startConvexInset -
-      startReflexExtension;
-    const coverageEnd =
-      wall.effectiveLength -
-      endOuterInset +
-      endInnerExtension -
-      endConvexInset +
-      endReflexExtension;
+    const layerCenterZ = 0;
+    const framingOrigin = {
+      x: (framingWall.quad.outerStart.x + framingWall.quad.innerStart.x) / 2,
+      y: (framingWall.quad.outerStart.y + framingWall.quad.innerStart.y) / 2,
+    };
+    const layerOrigin = {
+      x: (wall.quad.outerStart.x + wall.quad.innerStart.x) / 2,
+      y: (wall.quad.outerStart.y + wall.quad.innerStart.y) / 2,
+    };
+    const startOffset =
+      (layerOrigin.x - framingOrigin.x) * framingWall.direction.x +
+      (layerOrigin.y - framingOrigin.y) * framingWall.direction.y;
+    const coverageStart = 0;
+    const coverageEnd = wall.effectiveLength;
     const segmentLength = Math.max(maxStudLength, 1);
     const segmentBreaks = [coverageStart];
-    const jointCandidates = wall.studLayout.studs
-      .map((stud) => stud.centerPosition)
+    const jointCandidates = framingWall.studLayout.studs
+      .map((stud) => stud.centerPosition - startOffset)
       .filter(
         (centerPosition) =>
           centerPosition > coverageStart + 0.001 &&
@@ -847,7 +815,7 @@ function WallInstallationLayer({
     }
 
     return result;
-  }, [maxStudLength, thickness, wall, wallHeight]);
+  }, [framingWall, maxStudLength, thickness, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1027,6 +995,97 @@ function WallVaporBarrier({
           <lineBasicMaterial color="#72c2ff" linewidth={1} />
         </lineSegments>
       </group>
+    </group>
+  );
+}
+
+/** OSB sheathing on the interior side of the framing */
+function WallOsbBoards({
+  wall,
+  wallHeight,
+}: {
+  wall: Wall;
+  wallHeight: number;
+}) {
+  const osbTexture = useMemo(() => getOsbTexture(), []);
+
+  const boards = useMemo(() => {
+    const result: {
+      key: string;
+      pos: [number, number, number];
+      size: [number, number, number];
+      color: string;
+    }[] = [];
+
+    const boardThickness = OSB_BOARD_THICKNESS;
+    const boardThicknessM = boardThickness * MM;
+    const coverageStart = 0;
+    const coverageEnd = wall.effectiveLength;
+    const zCenter = 0;
+
+    let yStart = 0;
+    let rowIndex = 0;
+    while (yStart < wallHeight - 0.001) {
+      const boardHeight = Math.min(OSB_BOARD_HEIGHT, wallHeight - yStart);
+      let xStart = coverageStart;
+      let colIndex = 0;
+
+      while (xStart < coverageEnd - 0.001) {
+        const boardWidth = Math.min(OSB_BOARD_WIDTH, coverageEnd - xStart);
+
+        result.push({
+          key: `osb-${rowIndex}-${colIndex}`,
+          pos: [
+            (xStart + boardWidth / 2) * MM,
+            (yStart + boardHeight / 2) * MM,
+            zCenter,
+          ],
+          size: [boardWidth * MM, boardHeight * MM, boardThicknessM],
+          color: (rowIndex + colIndex) % 2 === 0 ? "#f1dfc2" : "#e7d2b0",
+        });
+
+        xStart += OSB_BOARD_WIDTH;
+        colIndex += 1;
+      }
+
+      yStart += OSB_BOARD_HEIGHT;
+      rowIndex += 1;
+    }
+
+    return result;
+  }, [wall, wallHeight]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  if (boards.length === 0) return null;
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {boards.map((board) => (
+        <group key={board.key} position={board.pos}>
+          <mesh castShadow receiveShadow renderOrder={1}>
+            <boxGeometry args={board.size} />
+            <meshStandardMaterial
+              map={osbTexture}
+              color={board.color}
+              roughness={0.92}
+              metalness={0}
+            />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(...board.size)]} />
+            <lineBasicMaterial color="#7c5732" linewidth={1} />
+          </lineSegments>
+        </group>
+      ))}
     </group>
   );
 }
@@ -1341,11 +1400,14 @@ function StudDimensions({ layout }: { layout: WallLayout }) {
 /** The complete 3D model of a WallLayout */
 function WallLayoutModel({
   framingLayout,
+  installationLayout,
+  osbLayout,
   shellLayout,
   wallHeight,
   outsideInsulation,
   installationLayer,
   installationLayerStudLength,
+  showOsb,
   showCavityInsulation,
   showHouseWrap,
   showVaporBarrier,
@@ -1356,11 +1418,14 @@ function WallLayoutModel({
   showStudDimensions,
 }: {
   framingLayout: WallLayout;
+  installationLayout: WallLayout | null;
+  osbLayout: WallLayout | null;
   shellLayout: WallLayout;
   wallHeight: number;
   outsideInsulation: number;
   installationLayer: number;
   installationLayerStudLength: number;
+  showOsb: boolean;
   showCavityInsulation: boolean;
   showHouseWrap: boolean;
   showVaporBarrier: boolean;
@@ -1425,14 +1490,23 @@ function WallLayoutModel({
 
       {showFraming &&
         installationLayer > 0 &&
-        framingLayout.walls.map((w) => (
+        installationLayout &&
+        installationLayout.walls.map((w, index) => (
           <WallInstallationLayer
             key={`installation-${w.id}`}
             wall={w}
+            framingWall={framingLayout.walls[index]}
             wallHeight={wallHeight}
             thickness={installationLayer}
             maxStudLength={installationLayerStudLength}
           />
+        ))}
+
+      {showFraming &&
+        showOsb &&
+        osbLayout &&
+        osbLayout.walls.map((w) => (
+          <WallOsbBoards key={`osb-${w.id}`} wall={w} wallHeight={wallHeight} />
         ))}
 
       {outsideInsulation > 0 &&
@@ -1480,6 +1554,7 @@ export default function WallLayoutScene() {
   const [showFraming, setShowFraming] = useState(true);
   const [showHouseWrap, setShowHouseWrap] = useState(false);
   const [showVaporBarrier, setShowVaporBarrier] = useState(false);
+  const [showOsb, setShowOsb] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showCorners, setShowCorners] = useState(false);
   const [showStudDimensions, setShowStudDimensions] = useState(true);
@@ -1526,6 +1601,27 @@ export default function WallLayoutScene() {
       studDepth: thickness,
     });
   }, [framingOuterCorners, studSpacing, thickness]);
+
+  const installationLayout = useMemo(() => {
+    if (installationLayer === 0) return null;
+    return new WallLayout(layout.innerCorners, {
+      thickness: installationLayer,
+      studSpacing,
+      studWidth: 45,
+      studDepth: installationLayer,
+    });
+  }, [installationLayer, layout.innerCorners, studSpacing]);
+
+  const osbLayout = useMemo(() => {
+    const osbOuterCorners = installationLayout
+      ? installationLayout.innerCorners
+      : layout.innerCorners;
+    return new WallLayout(osbOuterCorners, {
+      thickness: OSB_BOARD_THICKNESS,
+      studSpacing,
+      studDepth: OSB_BOARD_THICKNESS,
+    });
+  }, [installationLayout, layout.innerCorners, studSpacing]);
 
   // Camera target: center of the building footprint
   const cameraTarget = useMemo(() => {
@@ -1743,6 +1839,11 @@ export default function WallLayoutScene() {
                   toggle: () => setShowVaporBarrier((v) => !v),
                 },
                 {
+                  label: "OSB",
+                  checked: showOsb,
+                  toggle: () => setShowOsb((v) => !v),
+                },
+                {
                   label: "Väggetiketter",
                   checked: showLabels,
                   toggle: () => setShowLabels((v) => !v),
@@ -1874,11 +1975,14 @@ export default function WallLayoutScene() {
 
           <WallLayoutModel
             framingLayout={layout}
+            installationLayout={installationLayout}
+            osbLayout={osbLayout}
             shellLayout={shellLayout}
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
             installationLayer={installationLayer}
             installationLayerStudLength={installationLayerStudLength}
+            showOsb={showOsb}
             showCavityInsulation={showCavityInsulation}
             showHouseWrap={showHouseWrap}
             showVaporBarrier={showVaporBarrier}
