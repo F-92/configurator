@@ -27,6 +27,10 @@ const VERTICAL_PLATE_HEIGHT = 195; // mm
 const STUD_COLOR = "#f5e6c8";
 const WALL_SURFACE_COLOR = "#dfc4a0";
 const OUTSIDE_INSULATION_OPTIONS = [0, 30, 50, 80, 95] as const;
+const INSTALLATION_LAYER_OPTIONS = [0, 45, 70] as const;
+const INSTALLATION_LAYER_STUD_LENGTH_OPTIONS = [
+  2400, 3000, 3600, 4200,
+] as const;
 const INSULATION_SHEET_WIDTH = 1200; // mm
 const INSULATION_SHEET_HEIGHT = 2700; // mm
 const CAVITY_INSULATION_SHEET_HEIGHT = 1170; // mm
@@ -675,6 +679,221 @@ function WallCavityInsulation({
   );
 }
 
+/** Interior installation layer studs placed inside the vapor barrier */
+function WallInstallationLayer({
+  wall,
+  wallHeight,
+  thickness,
+  maxStudLength,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  thickness: number;
+  maxStudLength: number;
+}) {
+  const pineTexture = useMemo(() => getPineTexture(), []);
+
+  const layer = useMemo(() => {
+    const result: {
+      key: string;
+      pos: [number, number, number];
+      size: [number, number, number];
+      color?: string;
+    }[] = [];
+
+    if (thickness <= 0) return result;
+
+    const studWidth = 45;
+    const studDepth = thickness;
+    const studSpacing = 600;
+    const studWidthM = studWidth * MM;
+    const studDepthM = studDepth * MM;
+    const layerCenterZ =
+      (wall.thickness * MM) / 2 + HOUSE_WRAP_THICKNESS * MM + studDepthM / 2;
+    const startOuterInset =
+      wall.startCorner.joint === "through" &&
+      wall.startCorner.interiorAngle <= Math.PI
+        ? wall.thickness
+        : 0;
+    const endOuterInset =
+      wall.endCorner.joint === "through" &&
+      wall.endCorner.interiorAngle <= Math.PI
+        ? wall.thickness
+        : 0;
+    const startInnerExtension =
+      wall.startCorner.joint === "through" &&
+      wall.startCorner.interiorAngle > Math.PI
+        ? wall.thickness
+        : 0;
+    const endInnerExtension =
+      wall.endCorner.joint === "through" &&
+      wall.endCorner.interiorAngle > Math.PI
+        ? wall.thickness
+        : 0;
+    const startConvexInset =
+      wall.startCorner.joint === "butt" &&
+      wall.startCorner.interiorAngle <= Math.PI
+        ? thickness
+        : 0;
+    const endConvexInset =
+      wall.endCorner.joint === "butt" && wall.endCorner.interiorAngle <= Math.PI
+        ? thickness
+        : 0;
+    const startReflexExtension =
+      wall.startCorner.joint === "butt" &&
+      wall.startCorner.interiorAngle > Math.PI
+        ? thickness
+        : 0;
+    const endReflexExtension =
+      wall.endCorner.joint === "butt" && wall.endCorner.interiorAngle > Math.PI
+        ? thickness
+        : 0;
+    const coverageStart =
+      startOuterInset -
+      startInnerExtension +
+      startConvexInset -
+      startReflexExtension;
+    const coverageEnd =
+      wall.effectiveLength -
+      endOuterInset +
+      endInnerExtension -
+      endConvexInset +
+      endReflexExtension;
+    const segmentLength = Math.max(maxStudLength, 1);
+    const segmentBreaks = [coverageStart];
+    const jointCandidates = wall.studLayout.studs
+      .map((stud) => stud.centerPosition)
+      .filter(
+        (centerPosition) =>
+          centerPosition > coverageStart + 0.001 &&
+          centerPosition < coverageEnd - 0.001,
+      );
+    const studRowCenters: number[] = [];
+
+    while (segmentBreaks[segmentBreaks.length - 1] < coverageEnd - 0.001) {
+      const segmentStart = segmentBreaks[segmentBreaks.length - 1];
+      const maxSegmentEnd = Math.min(segmentStart + segmentLength, coverageEnd);
+      const alignedJoint = jointCandidates.findLast(
+        (centerPosition) =>
+          centerPosition > segmentStart + 0.001 &&
+          centerPosition <= maxSegmentEnd + 0.001,
+      );
+      const nextBreak = alignedJoint ?? maxSegmentEnd;
+
+      if (nextBreak <= segmentStart + 0.001) {
+        segmentBreaks.push(coverageEnd);
+        break;
+      }
+
+      segmentBreaks.push(nextBreak);
+    }
+
+    for (
+      let centerY = studWidth / 2;
+      centerY < wallHeight - studWidth / 2 - 0.001;
+      centerY += studSpacing
+    ) {
+      studRowCenters.push(centerY);
+    }
+    studRowCenters.push(wallHeight - studWidth / 2);
+
+    for (let rowIndex = 0; rowIndex < studRowCenters.length; rowIndex++) {
+      const rowCenter = studRowCenters[rowIndex];
+
+      for (let i = 0; i < segmentBreaks.length - 1; i++) {
+        const segmentStart = segmentBreaks[i];
+        const segmentEnd = segmentBreaks[i + 1];
+        const segmentWidth = Math.max(segmentEnd - segmentStart, 0.001);
+        const segmentCenter = segmentStart + segmentWidth / 2;
+
+        result.push({
+          key: `install-stud-${rowIndex}-${i}`,
+          pos: [segmentCenter * MM, rowCenter * MM, layerCenterZ],
+          size: [segmentWidth * MM, studWidthM, studDepthM],
+        });
+      }
+    }
+
+    for (let rowIndex = 0; rowIndex < studRowCenters.length - 1; rowIndex++) {
+      const lowerStudCenter = studRowCenters[rowIndex];
+      const upperStudCenter = studRowCenters[rowIndex + 1];
+      const bayBottom = lowerStudCenter + studWidth / 2;
+      const bayTop = upperStudCenter - studWidth / 2;
+      const bayHeight = bayTop - bayBottom;
+
+      if (bayHeight <= 1) {
+        continue;
+      }
+
+      let xStart = coverageStart;
+      let panelIndex = 0;
+      while (xStart < coverageEnd - 0.001) {
+        const panelWidth = Math.min(
+          CAVITY_INSULATION_SHEET_HEIGHT,
+          coverageEnd - xStart,
+        );
+
+        const yCenter = bayBottom + bayHeight / 2;
+        result.push({
+          key: `install-insulation-${rowIndex}-${panelIndex}`,
+          pos: [(xStart + panelWidth / 2) * MM, yCenter * MM, layerCenterZ],
+          size: [panelWidth * MM, bayHeight * MM, studDepthM],
+          color: (rowIndex + panelIndex) % 2 === 0 ? "#d8bf72" : "#ccb165",
+        });
+
+        xStart += CAVITY_INSULATION_SHEET_HEIGHT;
+        panelIndex += 1;
+      }
+    }
+
+    return result;
+  }, [maxStudLength, thickness, wall, wallHeight]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  if (thickness <= 0 || layer.length === 0) return null;
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {layer.map((part) => (
+        <group key={part.key} position={part.pos}>
+          <mesh castShadow receiveShadow>
+            <boxGeometry args={part.size} />
+            {part.color ? (
+              <meshStandardMaterial
+                color={part.color}
+                roughness={0.95}
+                metalness={0}
+              />
+            ) : (
+              <meshStandardMaterial
+                map={pineTexture}
+                color={STUD_COLOR}
+                roughness={0.85}
+              />
+            )}
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(...part.size)]} />
+            <lineBasicMaterial
+              color={part.color ? "#8d7341" : "#c8b08a"}
+              linewidth={1}
+            />
+          </lineSegments>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 /** Thin breathable membrane wrapped around the framing exterior */
 function WallHouseWrap({
   wall,
@@ -1125,6 +1344,8 @@ function WallLayoutModel({
   shellLayout,
   wallHeight,
   outsideInsulation,
+  installationLayer,
+  installationLayerStudLength,
   showCavityInsulation,
   showHouseWrap,
   showVaporBarrier,
@@ -1138,6 +1359,8 @@ function WallLayoutModel({
   shellLayout: WallLayout;
   wallHeight: number;
   outsideInsulation: number;
+  installationLayer: number;
+  installationLayerStudLength: number;
   showCavityInsulation: boolean;
   showHouseWrap: boolean;
   showVaporBarrier: boolean;
@@ -1200,6 +1423,18 @@ function WallLayoutModel({
           />
         ))}
 
+      {showFraming &&
+        installationLayer > 0 &&
+        framingLayout.walls.map((w) => (
+          <WallInstallationLayer
+            key={`installation-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+            thickness={installationLayer}
+            maxStudLength={installationLayerStudLength}
+          />
+        ))}
+
       {outsideInsulation > 0 &&
         framingLayout.walls.map((w) => (
           <WallInsulationSheets
@@ -1236,6 +1471,11 @@ export default function WallLayoutScene() {
   const [thickness, setThickness] = useState(145);
   const [studSpacing, setStudSpacing] = useState(600);
   const [outsideInsulationIndex, setOutsideInsulationIndex] = useState(0);
+  const [installationLayerIndex, setInstallationLayerIndex] = useState(0);
+  const [
+    installationLayerStudLengthIndex,
+    setInstallationLayerStudLengthIndex,
+  ] = useState(INSTALLATION_LAYER_STUD_LENGTH_OPTIONS.length - 1);
   const [wallHeight, setWallHeight] = useState(WALL_HEIGHT);
   const [showFraming, setShowFraming] = useState(true);
   const [showHouseWrap, setShowHouseWrap] = useState(false);
@@ -1255,6 +1495,9 @@ export default function WallLayoutScene() {
     target: [0, 0, 0],
   });
   const outsideInsulation = OUTSIDE_INSULATION_OPTIONS[outsideInsulationIndex];
+  const installationLayer = INSTALLATION_LAYER_OPTIONS[installationLayerIndex];
+  const installationLayerStudLength =
+    INSTALLATION_LAYER_STUD_LENGTH_OPTIONS[installationLayerStudLengthIndex];
 
   const baseOuterCorners = useMemo(() => {
     return PRESETS[presetIndex].create(thickness, studSpacing).outerCorners;
@@ -1402,6 +1645,51 @@ export default function WallLayoutScene() {
             <div className="flex justify-between text-xs text-zinc-500 mt-1">
               {OUTSIDE_INSULATION_OPTIONS.map((value) => (
                 <span key={value}>{value}mm</span>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-zinc-300 mb-1">
+              Installationsskikt: {installationLayer} mm
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={INSTALLATION_LAYER_OPTIONS.length - 1}
+              step={1}
+              value={installationLayerIndex}
+              onChange={(e) =>
+                setInstallationLayerIndex(Number(e.target.value))
+              }
+              className="w-full accent-amber-400"
+            />
+            <div className="flex justify-between text-xs text-zinc-500 mt-1">
+              {INSTALLATION_LAYER_OPTIONS.map((value) => (
+                <span key={value}>{value}mm</span>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-zinc-300 mb-1">
+              Längd reglar för installationsskikt: {installationLayerStudLength}{" "}
+              mm
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={INSTALLATION_LAYER_STUD_LENGTH_OPTIONS.length - 1}
+              step={1}
+              value={installationLayerStudLengthIndex}
+              onChange={(e) =>
+                setInstallationLayerStudLengthIndex(Number(e.target.value))
+              }
+              className="w-full accent-amber-400"
+            />
+            <div className="flex justify-between text-xs text-zinc-500 mt-1">
+              {INSTALLATION_LAYER_STUD_LENGTH_OPTIONS.map((value) => (
+                <span key={value}>{value}</span>
               ))}
             </div>
           </div>
@@ -1589,6 +1877,8 @@ export default function WallLayoutScene() {
             shellLayout={shellLayout}
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
+            installationLayer={installationLayer}
+            installationLayerStudLength={installationLayerStudLength}
             showCavityInsulation={showCavityInsulation}
             showHouseWrap={showHouseWrap}
             showVaporBarrier={showVaporBarrier}
