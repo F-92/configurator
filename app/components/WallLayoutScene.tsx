@@ -22,11 +22,14 @@ import { getPineTexture } from "../lib/woodTexture";
 const MM = 0.001; // mm → meters for Three.js
 const WALL_HEIGHT = 2700; // mm
 const PLATE_HEIGHT = 45; // mm
+const VERTICAL_PLATE_THICKNESS = 45; // mm
+const VERTICAL_PLATE_HEIGHT = 195; // mm
 const STUD_COLOR = "#f5e6c8";
 const WALL_SURFACE_COLOR = "#dfc4a0";
 const OUTSIDE_INSULATION_OPTIONS = [0, 30, 50, 80, 95] as const;
 const INSULATION_SHEET_WIDTH = 1200; // mm
 const INSULATION_SHEET_HEIGHT = 2700; // mm
+const CAVITY_INSULATION_SHEET_HEIGHT = 1170; // mm
 const HOUSE_WRAP_THICKNESS = 2; // mm visual membrane thickness
 
 // ---- Preset Layouts ----
@@ -35,6 +38,38 @@ interface LayoutPreset {
   name: string;
   description: string;
   create: (thickness: number, studSpacing: number) => WallLayout;
+}
+
+function createNotchedStudGeometry(
+  studWidth: number,
+  studHeight: number,
+  studDepth: number,
+  notchHeight: number,
+  notchDepth: number,
+): THREE.ExtrudeGeometry {
+  const halfDepth = studDepth / 2;
+  const halfHeight = studHeight / 2;
+  const notchBottom = halfHeight - notchHeight;
+  const notchFace = -halfDepth + notchDepth;
+
+  const shape = new THREE.Shape();
+  shape.moveTo(-halfDepth, -halfHeight);
+  shape.lineTo(halfDepth, -halfHeight);
+  shape.lineTo(halfDepth, halfHeight);
+  shape.lineTo(notchFace, halfHeight);
+  shape.lineTo(notchFace, notchBottom);
+  shape.lineTo(-halfDepth, notchBottom);
+  shape.closePath();
+
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: studWidth,
+    bevelEnabled: false,
+  });
+
+  geometry.rotateY(-Math.PI / 2);
+  geometry.translate(studWidth / 2, 0, 0);
+
+  return geometry;
 }
 
 const PRESETS: LayoutPreset[] = [
@@ -153,14 +188,23 @@ const PRESETS: LayoutPreset[] = [
 // ---- 3D Wall Components ----
 
 /** Renders a single wall's stud framing in 3D */
-function WallFraming({ wall, wallHeight }: { wall: Wall; wallHeight: number }) {
+function WallFraming({
+  wall,
+  wallHeight,
+  showVerticalTopPlate,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  showVerticalTopPlate: boolean;
+}) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
   const meshes = useMemo(() => {
     const result: {
       key: string;
       pos: [number, number, number];
-      size: [number, number, number];
+      geometry?: THREE.BufferGeometry;
+      size?: [number, number, number];
     }[] = [];
 
     const effLen = wall.effectiveLength * MM;
@@ -171,6 +215,23 @@ function WallFraming({ wall, wallHeight }: { wall: Wall; wallHeight: number }) {
     const studDM = studD * MM;
     const plateH = PLATE_HEIGHT * MM;
     const fullStudH = wallH - 2 * plateH;
+    const verticalPlateH =
+      showVerticalTopPlate && fullStudH > VERTICAL_PLATE_HEIGHT * MM
+        ? VERTICAL_PLATE_HEIGHT * MM
+        : 0;
+    const verticalPlateD = VERTICAL_PLATE_THICKNESS * MM;
+    const outerFaceZ = -studDM / 2;
+    const verticalPlateZ = outerFaceZ + verticalPlateD / 2;
+    const notchedStudGeometry =
+      verticalPlateH > 0
+        ? createNotchedStudGeometry(
+            studWM,
+            fullStudH,
+            studDM,
+            verticalPlateH,
+            verticalPlateD,
+          )
+        : null;
 
     // Bottom plate
     result.push({
@@ -186,18 +247,35 @@ function WallFraming({ wall, wallHeight }: { wall: Wall; wallHeight: number }) {
       size: [effLen, plateH, studDM],
     });
 
+    if (verticalPlateH > 0) {
+      result.push({
+        key: "vtp",
+        pos: [effLen / 2, wallH - plateH - verticalPlateH / 2, verticalPlateZ],
+        size: [effLen, verticalPlateH, verticalPlateD],
+      });
+    }
+
     // Studs
     for (let i = 0; i < wall.studLayout.studs.length; i++) {
       const stud = wall.studLayout.studs[i];
       const x = stud.centerPosition * MM;
-      result.push({
-        key: `s-${i}`,
-        pos: [x, plateH + fullStudH / 2, 0],
-        size: [studWM, fullStudH, studDM],
-      });
+      if (verticalPlateH > 0 && notchedStudGeometry) {
+        result.push({
+          key: `s-${i}`,
+          pos: [x, plateH + fullStudH / 2, 0],
+          geometry: notchedStudGeometry,
+        });
+      } else {
+        result.push({
+          key: `s-${i}`,
+          pos: [x, plateH + fullStudH / 2, 0],
+          size: [studWM, fullStudH, studDM],
+        });
+      }
     }
 
-    // California corner studs — turned 90°, offset toward inner or outer face
+    // California corner studs stay full height; only the regular studs are
+    // notched for the vertical top plate in the main framing implementation.
     for (let i = 0; i < wall.studLayout.cornerStuds.length; i++) {
       const cs = wall.studLayout.cornerStuds[i];
       const x = cs.centerPosition * MM;
@@ -216,7 +294,7 @@ function WallFraming({ wall, wallHeight }: { wall: Wall; wallHeight: number }) {
     }
 
     return result;
-  }, [wall, wallHeight]);
+  }, [showVerticalTopPlate, wall, wallHeight]);
 
   // Position the group at the wall's physical start, rotated to face the correct direction
   const { position, rotationY } = useMemo(() => {
@@ -235,7 +313,11 @@ function WallFraming({ wall, wallHeight }: { wall: Wall; wallHeight: number }) {
       {meshes.map((m) => (
         <group key={m.key} position={m.pos}>
           <mesh>
-            <boxGeometry args={m.size} />
+            {m.geometry ? (
+              <primitive object={m.geometry} attach="geometry" />
+            ) : (
+              <boxGeometry args={m.size} />
+            )}
             <meshStandardMaterial
               map={pineTexture}
               color={STUD_COLOR}
@@ -243,7 +325,11 @@ function WallFraming({ wall, wallHeight }: { wall: Wall; wallHeight: number }) {
             />
           </mesh>
           <lineSegments>
-            <edgesGeometry args={[new THREE.BoxGeometry(...m.size)]} />
+            {m.geometry ? (
+              <edgesGeometry args={[m.geometry]} />
+            ) : (
+              <edgesGeometry args={[new THREE.BoxGeometry(...m.size!)]} />
+            )}
             <lineBasicMaterial color="#c8b08a" linewidth={1} />
           </lineSegments>
         </group>
@@ -323,7 +409,7 @@ function WallInsulationSheets({
     const depthM = thickness * MM;
     const wallThicknessM = wall.thickness * MM;
     const zCenter = -(wallThicknessM / 2 + depthM / 2) - 0.001;
-    const startCornerTrim = Math.max(wall.startCorner.retraction, 0);
+    const startOuterCornerOffset = -wall.startCorner.retraction;
     const startConvexExtension =
       wall.startCorner.interiorAngle <= Math.PI &&
       wall.startCorner.joint === "butt"
@@ -343,9 +429,29 @@ function WallInsulationSheets({
         ? thickness
         : 0;
     const coverageStart =
-      -startCornerTrim - startConvexExtension + startReflexInset;
+      startOuterCornerOffset - startConvexExtension + startReflexInset;
     const coverageEnd =
-      -startCornerTrim + centerlineLength + endConvexExtension - endReflexInset;
+      startOuterCornerOffset +
+      centerlineLength +
+      endConvexExtension -
+      endReflexInset;
+    const studWidth = wall.studLayout.studs[0]?.width ?? 45;
+    const studHalfWidth = studWidth / 2;
+    const studSpacing = wall.studLayout.targetSpacing;
+    const firstStudGrid =
+      Math.ceil(
+        (wall.startCorner.retraction + studHalfWidth + 0.001) / studSpacing,
+      ) * studSpacing;
+    const studGridOrigin = firstStudGrid - wall.startCorner.retraction;
+    const sheetGridOrigin =
+      wall.startCorner.joint === "butt" &&
+      wall.startCorner.interiorAngle <= Math.PI
+        ? studGridOrigin
+        : studGridOrigin - studSpacing;
+    const firstSheetStart =
+      Math.floor((coverageStart - sheetGridOrigin) / INSULATION_SHEET_WIDTH) *
+        INSULATION_SHEET_WIDTH +
+      sheetGridOrigin;
 
     let yStart = 0;
     let rowIndex = 0;
@@ -357,7 +463,7 @@ function WallInsulationSheets({
       let sheetIndex = 0;
 
       while (true) {
-        const rawStart = coverageStart + sheetIndex * INSULATION_SHEET_WIDTH;
+        const rawStart = firstSheetStart + sheetIndex * INSULATION_SHEET_WIDTH;
         const rawEnd = rawStart + INSULATION_SHEET_WIDTH;
 
         if (rawStart >= coverageEnd - 0.001) break;
@@ -420,6 +526,148 @@ function WallInsulationSheets({
           <lineSegments>
             <edgesGeometry args={[new THREE.BoxGeometry(...sheet.size)]} />
             <lineBasicMaterial color="#5a452d" linewidth={1} />
+          </lineSegments>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+/** Interior cavity insulation placed between studs */
+function WallCavityInsulation({
+  wall,
+  wallHeight,
+  showVerticalTopPlate,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  showVerticalTopPlate: boolean;
+}) {
+  const panels = useMemo(() => {
+    const result: {
+      key: string;
+      pos: [number, number, number];
+      size?: [number, number, number];
+      geometry?: THREE.BufferGeometry;
+      color: string;
+    }[] = [];
+
+    const studs = wall.studLayout.studs;
+    if (studs.length < 2) return result;
+
+    const studWidth = studs[0]?.width ?? 45;
+    const studDepth = studs[0]?.depth ?? wall.thickness;
+    const studSpacing = wall.studLayout.targetSpacing;
+    const plateH = PLATE_HEIGHT;
+    const verticalPlateH = showVerticalTopPlate
+      ? Math.min(VERTICAL_PLATE_HEIGHT, wallHeight)
+      : 0;
+    const cavityBottom = plateH;
+    const cavityTop = wallHeight - plateH;
+    const cavityHeight = cavityTop - cavityBottom;
+    if (cavityHeight <= 0.001) return result;
+
+    const panelDepth = studDepth * MM;
+    const maxPanelWidth = Math.max(studSpacing - studWidth, 1);
+    const zCenter = 0;
+    const verticalPlateZoneStart = wallHeight - plateH - verticalPlateH;
+
+    for (let i = 0; i < studs.length - 1; i++) {
+      const leftStud = studs[i];
+      const rightStud = studs[i + 1];
+      const bayStart = leftStud.centerPosition + leftStud.width / 2;
+      const bayEnd = rightStud.centerPosition - rightStud.width / 2;
+      const bayWidth = bayEnd - bayStart;
+
+      if (bayWidth <= 1) continue;
+
+      const panelCount = Math.max(1, Math.ceil(bayWidth / maxPanelWidth));
+      const panelWidth = bayWidth / panelCount;
+      let rowStart = cavityBottom;
+      let rowIndex = 0;
+
+      while (rowStart < cavityTop - 0.001) {
+        const panelHeight = Math.min(
+          CAVITY_INSULATION_SHEET_HEIGHT,
+          cavityTop - rowStart,
+        );
+        const rowEnd = rowStart + panelHeight;
+        const notchHeight =
+          verticalPlateH > 0
+            ? Math.max(
+                0,
+                Math.min(rowEnd - verticalPlateZoneStart, panelHeight),
+              )
+            : 0;
+
+        for (let panelIndex = 0; panelIndex < panelCount; panelIndex++) {
+          const panelStart = bayStart + panelIndex * panelWidth;
+          const xCenter = panelStart + panelWidth / 2;
+          const panelGeometry =
+            notchHeight > 0
+              ? createNotchedStudGeometry(
+                  panelWidth * MM,
+                  panelHeight * MM,
+                  panelDepth,
+                  notchHeight * MM,
+                  VERTICAL_PLATE_THICKNESS * MM,
+                )
+              : undefined;
+
+          result.push({
+            key: `cavity-${i}-${rowIndex}-${panelIndex}`,
+            pos: [xCenter * MM, (rowStart + panelHeight / 2) * MM, zCenter],
+            size: panelGeometry
+              ? undefined
+              : [panelWidth * MM, panelHeight * MM, panelDepth],
+            geometry: panelGeometry,
+            color: (rowIndex + panelIndex) % 2 === 0 ? "#d8bf72" : "#ccb165",
+          });
+        }
+
+        rowStart += CAVITY_INSULATION_SHEET_HEIGHT;
+        rowIndex += 1;
+      }
+    }
+
+    return result;
+  }, [showVerticalTopPlate, wall, wallHeight]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  if (panels.length === 0) return null;
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {panels.map((panel) => (
+        <group key={panel.key} position={panel.pos}>
+          <mesh castShadow receiveShadow>
+            {panel.geometry ? (
+              <primitive object={panel.geometry} attach="geometry" />
+            ) : (
+              <boxGeometry args={panel.size} />
+            )}
+            <meshStandardMaterial
+              color={panel.color}
+              roughness={0.95}
+              metalness={0}
+            />
+          </mesh>
+          <lineSegments>
+            {panel.geometry ? (
+              <edgesGeometry args={[panel.geometry]} />
+            ) : (
+              <edgesGeometry args={[new THREE.BoxGeometry(...panel.size!)]} />
+            )}
+            <lineBasicMaterial color="#8d7341" linewidth={1} />
           </lineSegments>
         </group>
       ))}
@@ -877,9 +1125,11 @@ function WallLayoutModel({
   shellLayout,
   wallHeight,
   outsideInsulation,
+  showCavityInsulation,
   showHouseWrap,
   showVaporBarrier,
   showFraming,
+  showVerticalTopPlate,
   showLabels,
   showCorners,
   showStudDimensions,
@@ -888,9 +1138,11 @@ function WallLayoutModel({
   shellLayout: WallLayout;
   wallHeight: number;
   outsideInsulation: number;
+  showCavityInsulation: boolean;
   showHouseWrap: boolean;
   showVaporBarrier: boolean;
   showFraming: boolean;
+  showVerticalTopPlate: boolean;
   showLabels: boolean;
   showCorners: boolean;
   showStudDimensions: boolean;
@@ -901,7 +1153,12 @@ function WallLayoutModel({
 
       {(showFraming ? framingLayout.walls : shellLayout.walls).map((w) =>
         showFraming ? (
-          <WallFraming key={w.id} wall={w} wallHeight={wallHeight} />
+          <WallFraming
+            key={w.id}
+            wall={w}
+            wallHeight={wallHeight}
+            showVerticalTopPlate={showVerticalTopPlate}
+          />
         ) : (
           <WallSurface
             key={w.id}
@@ -911,6 +1168,17 @@ function WallLayoutModel({
           />
         ),
       )}
+
+      {showFraming &&
+        showCavityInsulation &&
+        framingLayout.walls.map((w) => (
+          <WallCavityInsulation
+            key={`cavity-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+            showVerticalTopPlate={showVerticalTopPlate}
+          />
+        ))}
 
       {showFraming &&
         showHouseWrap &&
@@ -975,6 +1243,17 @@ export default function WallLayoutScene() {
   const [showLabels, setShowLabels] = useState(true);
   const [showCorners, setShowCorners] = useState(false);
   const [showStudDimensions, setShowStudDimensions] = useState(true);
+  const [showVerticalTopPlate, setShowVerticalTopPlate] = useState(false);
+  const [showCavityInsulation, setShowCavityInsulation] = useState(false);
+  const [cameraView, setCameraView] = useState<{
+    key: number;
+    position: [number, number, number];
+    target: [number, number, number];
+  }>({
+    key: 0,
+    position: [15, 10, 15],
+    target: [0, 0, 0],
+  });
   const outsideInsulation = OUTSIDE_INSULATION_OPTIONS[outsideInsulationIndex];
 
   const baseOuterCorners = useMemo(() => {
@@ -1156,6 +1435,16 @@ export default function WallLayoutScene() {
                   toggle: () => setShowFraming((v) => !v),
                 },
                 {
+                  label: "Stående hammarband",
+                  checked: showVerticalTopPlate,
+                  toggle: () => setShowVerticalTopPlate((v) => !v),
+                },
+                {
+                  label: "Isolering mellan reglar",
+                  checked: showCavityInsulation,
+                  toggle: () => setShowCavityInsulation((v) => !v),
+                },
+                {
                   label: "House wrap",
                   checked: showHouseWrap,
                   toggle: () => setShowHouseWrap((v) => !v),
@@ -1264,14 +1553,21 @@ export default function WallLayoutScene() {
           className="w-full h-full"
         >
           <color attach="background" args={["#ffffff"]} />
-          <PerspectiveCamera makeDefault position={[15, 10, 15]} fov={50} />
+          <PerspectiveCamera
+            key={`camera-${cameraView.key}`}
+            makeDefault
+            position={cameraView.position}
+            fov={50}
+          />
           <OrbitControls
+            key={`controls-${cameraView.key}`}
             enableDamping
             dampingFactor={0.1}
             enablePan
             minDistance={3}
             maxDistance={60}
             maxPolarAngle={Math.PI / 2 - 0.05}
+            target={cameraView.target}
             zoomToCursor
           />
 
@@ -1293,9 +1589,11 @@ export default function WallLayoutScene() {
             shellLayout={shellLayout}
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
+            showCavityInsulation={showCavityInsulation}
             showHouseWrap={showHouseWrap}
             showVaporBarrier={showVaporBarrier}
             showFraming={showFraming}
+            showVerticalTopPlate={showVerticalTopPlate}
             showLabels={showLabels}
             showCorners={showCorners}
             showStudDimensions={showStudDimensions}
@@ -1317,9 +1615,27 @@ export default function WallLayoutScene() {
         </Canvas>
 
         {/* Viewport help */}
-        <div className="absolute bottom-4 left-4 text-xs text-zinc-500 bg-white/70 backdrop-blur rounded px-2 py-1">
-          Dra för att rotera · Scrolla för att zooma · Högerklick för att
-          panorera
+        <div className="absolute bottom-4 left-4 flex items-center gap-2">
+          <div className="text-xs text-zinc-500 bg-white/70 backdrop-blur rounded px-2 py-1">
+            Dra för att rotera · Scrolla för att zooma · Högerklick för att
+            panorera
+          </div>
+          <button
+            onClick={() =>
+              setCameraView((view) => ({
+                key: view.key + 1,
+                position: [
+                  cameraTarget[0] + 15,
+                  cameraTarget[1] + 9,
+                  cameraTarget[2] + 15,
+                ],
+                target: cameraTarget,
+              }))
+            }
+            className="rounded bg-white/70 px-3 py-1 text-xs font-medium text-zinc-700 backdrop-blur transition-colors hover:bg-white/90"
+          >
+            Centrera
+          </button>
         </div>
       </main>
     </div>
