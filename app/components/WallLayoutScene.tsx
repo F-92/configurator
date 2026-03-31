@@ -41,6 +41,13 @@ const INSULATION_SHEET_WIDTH = 1200; // mm
 const INSULATION_SHEET_HEIGHT = 2700; // mm
 const CAVITY_INSULATION_SHEET_HEIGHT = 1170; // mm
 const HOUSE_WRAP_THICKNESS = 2; // mm visual membrane thickness
+const FACADE_AIR_GAP = 25; // mm ventilated cavity behind cladding
+const MUSBAND_HEIGHT = 20; // mm starter leg height against the wall
+const MUSBAND_THICKNESS = 1; // mm sheet metal thickness
+const MUSBAND_PROJECTION = 28; // mm outward projection from the wall via the comb teeth
+const MUSBAND_COMB_TOOTH_WIDTH = 4; // mm
+const MUSBAND_COMB_GAP_WIDTH = 4; // mm
+const MUSBAND_FLANGE_TILT = (-15 * Math.PI) / 180; // slight tilt from a perfect 90-degree bend
 
 // ---- Preset Layouts ----
 
@@ -80,6 +87,63 @@ function createNotchedStudGeometry(
   geometry.translate(studWidth / 2, 0, 0);
 
   return geometry;
+}
+
+function getExteriorCoverageRange(wall: Wall, layerThicknessMm: number) {
+  const startOuterCornerOffset = -wall.startCorner.retraction;
+  const startConvexExtension =
+    wall.startCorner.interiorAngle <= Math.PI &&
+    wall.startCorner.joint === "butt"
+      ? layerThicknessMm
+      : 0;
+  const endConvexExtension =
+    wall.endCorner.interiorAngle <= Math.PI && wall.endCorner.joint === "butt"
+      ? layerThicknessMm
+      : 0;
+  const startReflexInset =
+    wall.startCorner.interiorAngle > Math.PI &&
+    wall.startCorner.joint === "butt"
+      ? layerThicknessMm
+      : 0;
+  const endReflexInset =
+    wall.endCorner.interiorAngle > Math.PI && wall.endCorner.joint === "butt"
+      ? layerThicknessMm
+      : 0;
+
+  return {
+    coverageStart:
+      startOuterCornerOffset - startConvexExtension + startReflexInset,
+    coverageEnd:
+      startOuterCornerOffset +
+      wall.centerlineLength +
+      endConvexExtension -
+      endReflexInset,
+  };
+}
+
+function createMusbandTeeth(length: number) {
+  const combPitch = (MUSBAND_COMB_TOOTH_WIDTH + MUSBAND_COMB_GAP_WIDTH) * MM;
+  const toothWidth = MUSBAND_COMB_TOOTH_WIDTH * MM;
+  const edgePadding = Math.min(0.02, Math.max(0.01, length * 0.025));
+  const usableLength = Math.max(length - edgePadding * 2, 0);
+  const toothCount = Math.max(1, Math.floor(usableLength / combPitch));
+
+  if (usableLength < toothWidth + 0.001) {
+    return [
+      { key: "tooth-0", centerX: 0, width: Math.min(length, toothWidth) },
+    ];
+  }
+
+  const startCenter = -length / 2 + edgePadding + toothWidth / 2;
+  const endCenter = length / 2 - edgePadding - toothWidth / 2;
+  const step =
+    toothCount > 1 ? (endCenter - startCenter) / (toothCount - 1) : 0;
+
+  return Array.from({ length: toothCount }, (_, index) => ({
+    key: `tooth-${index}`,
+    centerX: toothCount === 1 ? 0 : startCenter + step * index,
+    width: toothWidth,
+  }));
 }
 
 const PRESETS: LayoutPreset[] = [
@@ -414,37 +478,14 @@ function WallInsulationSheets({
 
     if (thickness <= 0) return result;
 
-    const centerlineLength = wall.centerlineLength;
     const wallHeightMm = wallHeight;
     const depthM = thickness * MM;
     const wallThicknessM = wall.thickness * MM;
     const zCenter = -(wallThicknessM / 2 + depthM / 2) - 0.001;
-    const startOuterCornerOffset = -wall.startCorner.retraction;
-    const startConvexExtension =
-      wall.startCorner.interiorAngle <= Math.PI &&
-      wall.startCorner.joint === "butt"
-        ? thickness
-        : 0;
-    const endConvexExtension =
-      wall.endCorner.interiorAngle <= Math.PI && wall.endCorner.joint === "butt"
-        ? thickness
-        : 0;
-    const startReflexInset =
-      wall.startCorner.interiorAngle > Math.PI &&
-      wall.startCorner.joint === "butt"
-        ? thickness
-        : 0;
-    const endReflexInset =
-      wall.endCorner.interiorAngle > Math.PI && wall.endCorner.joint === "butt"
-        ? thickness
-        : 0;
-    const coverageStart =
-      startOuterCornerOffset - startConvexExtension + startReflexInset;
-    const coverageEnd =
-      startOuterCornerOffset +
-      centerlineLength +
-      endConvexExtension -
-      endReflexInset;
+    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
+      wall,
+      thickness,
+    );
     const studWidth = wall.studLayout.studs[0]?.width ?? 45;
     const studHalfWidth = studWidth / 2;
     const studSpacing = wall.studLayout.targetSpacing;
@@ -874,15 +915,19 @@ function WallHouseWrap({
   wallHeight: number;
 }) {
   const wrapMesh = useMemo(() => {
-    const wrapLen = wall.centerlineLength * MM;
-    const wrapThickness = HOUSE_WRAP_THICKNESS * MM;
+    const wrapThicknessMm = HOUSE_WRAP_THICKNESS;
+    const wrapThickness = wrapThicknessMm * MM;
     const framingDepth = wall.thickness * MM;
     const wallH = wallHeight * MM;
-    const wrapStart = -wall.startCorner.retraction * MM;
+    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
+      wall,
+      wrapThicknessMm,
+    );
+    const wrapLen = Math.max(coverageEnd - coverageStart, 0.001) * MM;
 
     return {
       pos: [
-        wrapStart + wrapLen / 2,
+        coverageStart * MM + wrapLen / 2,
         wallH / 2,
         -(framingDepth / 2 + wrapThickness / 2),
       ] as [number, number, number],
@@ -917,6 +962,108 @@ function WallHouseWrap({
           <edgesGeometry args={[new THREE.BoxGeometry(...wrapMesh.size)]} />
           <lineBasicMaterial color="#e1e1e1" linewidth={1} />
         </lineSegments>
+      </group>
+    </group>
+  );
+}
+
+/** Bent metal comb profile at the base of the ventilated facade cavity */
+function WallMusband({
+  wall,
+  outsideInsulation,
+}: {
+  wall: Wall;
+  outsideInsulation: number;
+}) {
+  const strip = useMemo(() => {
+    const coverageLayer =
+      outsideInsulation > 0 ? outsideInsulation : HOUSE_WRAP_THICKNESS;
+    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
+      wall,
+      coverageLayer,
+    );
+    const length = Math.max(coverageEnd - coverageStart, 0.001) * MM;
+    const height = MUSBAND_HEIGHT * MM;
+    const projection = MUSBAND_PROJECTION * MM;
+    const thickness = MUSBAND_THICKNESS * MM;
+    const framingDepth = wall.thickness * MM;
+    const weatherLayerDepth =
+      outsideInsulation > 0
+        ? framingDepth / 2 + outsideInsulation * MM
+        : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
+
+    return {
+      rootPos: [coverageStart * MM + length / 2, 0, -weatherLayerDepth] as [
+        number,
+        number,
+        number,
+      ],
+      backStripSize: [length, height, thickness] as [number, number, number],
+      backStripPos: [0, height / 2, -thickness / 2] as [number, number, number],
+      teeth: createMusbandTeeth(length).map((tooth) => ({
+        key: tooth.key,
+        pos: [tooth.centerX, thickness / 2, -thickness / 2] as [
+          number,
+          number,
+          number,
+        ],
+        size: [tooth.width, thickness, projection] as [number, number, number],
+      })),
+    };
+  }, [outsideInsulation, wall]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      <group position={strip.rootPos}>
+        <group position={strip.backStripPos}>
+          <mesh castShadow receiveShadow renderOrder={2}>
+            <boxGeometry args={strip.backStripSize} />
+            <meshStandardMaterial
+              color="#9ca3af"
+              roughness={0.45}
+              metalness={0.9}
+            />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry
+              args={[new THREE.BoxGeometry(...strip.backStripSize)]}
+            />
+            <lineBasicMaterial color="#6b7280" linewidth={1} />
+          </lineSegments>
+        </group>
+
+        {strip.teeth.map((tooth) => (
+          <group
+            key={tooth.key}
+            position={tooth.pos}
+            rotation={[MUSBAND_FLANGE_TILT, 0, 0]}
+          >
+            <group position={[0, 0, -tooth.size[2] / 2]}>
+              <mesh castShadow receiveShadow renderOrder={2}>
+                <boxGeometry args={tooth.size} />
+                <meshStandardMaterial
+                  color="#9ca3af"
+                  roughness={0.45}
+                  metalness={0.9}
+                />
+              </mesh>
+              <lineSegments>
+                <edgesGeometry args={[new THREE.BoxGeometry(...tooth.size)]} />
+                <lineBasicMaterial color="#6b7280" linewidth={1} />
+              </lineSegments>
+            </group>
+          </group>
+        ))}
       </group>
     </group>
   );
@@ -1501,6 +1648,7 @@ function WallLayoutModel({
   showDrywall,
   showCavityInsulation,
   showHouseWrap,
+  showMusband,
   showVaporBarrier,
   showFraming,
   showVerticalTopPlate,
@@ -1521,6 +1669,7 @@ function WallLayoutModel({
   showDrywall: boolean;
   showCavityInsulation: boolean;
   showHouseWrap: boolean;
+  showMusband: boolean;
   showVaporBarrier: boolean;
   showFraming: boolean;
   showVerticalTopPlate: boolean;
@@ -1568,6 +1717,15 @@ function WallLayoutModel({
             key={`wrap-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
+          />
+        ))}
+
+      {showMusband &&
+        framingLayout.walls.map((w) => (
+          <WallMusband
+            key={`musband-${w.id}`}
+            wall={w}
+            outsideInsulation={outsideInsulation}
           />
         ))}
 
@@ -1657,6 +1815,7 @@ export default function WallLayoutScene() {
   const [wallHeight, setWallHeight] = useState(WALL_HEIGHT);
   const [showFraming, setShowFraming] = useState(true);
   const [showHouseWrap, setShowHouseWrap] = useState(false);
+  const [showMusband, setShowMusband] = useState(false);
   const [showVaporBarrier, setShowVaporBarrier] = useState(false);
   const [showOsb, setShowOsb] = useState(false);
   const [showDrywall, setShowDrywall] = useState(false);
@@ -1959,6 +2118,11 @@ export default function WallLayoutScene() {
                   toggle: () => setShowHouseWrap((v) => !v),
                 },
                 {
+                  label: "Musband",
+                  checked: showMusband,
+                  toggle: () => setShowMusband((v) => !v),
+                },
+                {
                   label: "Vapor barrier",
                   checked: showVaporBarrier,
                   toggle: () => setShowVaporBarrier((v) => !v),
@@ -2011,6 +2175,10 @@ export default function WallLayoutScene() {
             <div className="text-xs text-zinc-400 space-y-0.5">
               <div>Antal väggar: {layout.count}</div>
               <div>Outside insulation: {outsideInsulation} mm</div>
+              <div>Ventilerad luftspalt bakom fasad: {FACADE_AIR_GAP} mm</div>
+              <div>
+                Musband: bockad kamprofil, utstick {MUSBAND_PROJECTION} mm
+              </div>
               <div>
                 Ytterperimeter:{" "}
                 {(
@@ -2117,6 +2285,7 @@ export default function WallLayoutScene() {
             showDrywall={showDrywall}
             showCavityInsulation={showCavityInsulation}
             showHouseWrap={showHouseWrap}
+            showMusband={showMusband}
             showVaporBarrier={showVaporBarrier}
             showFraming={showFraming}
             showVerticalTopPlate={showVerticalTopPlate}
