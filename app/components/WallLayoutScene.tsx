@@ -25,6 +25,8 @@ const PLATE_HEIGHT = 45; // mm
 const VERTICAL_PLATE_THICKNESS = 45; // mm
 const VERTICAL_PLATE_HEIGHT = 195; // mm
 const STUD_COLOR = "#f5e6c8";
+const PRIMED_PANEL_COLOR = "#f4f3ee";
+const PRIMED_PANEL_BASE_COLOR = "#ebe9e0";
 const WALL_SURFACE_COLOR = "#dfc4a0";
 const OUTSIDE_INSULATION_OPTIONS = [0, 30, 50, 80, 95] as const;
 const INSTALLATION_LAYER_OPTIONS = [0, 45, 70] as const;
@@ -42,9 +44,22 @@ const INSULATION_SHEET_HEIGHT = 2700; // mm
 const CAVITY_INSULATION_SHEET_HEIGHT = 1170; // mm
 const HOUSE_WRAP_THICKNESS = 2; // mm visual membrane thickness
 const FACADE_AIR_GAP = 25; // mm ventilated cavity behind cladding
+const SPIKLAKT_THICKNESS = 25; // mm horizontal battens creating the air gap
+const SPIKLAKT_HEIGHT = 48; // mm batten face height
+const SPIKLAKT_SPACING = 600; // mm vertical spacing between horizontal battens
+const YTTERPANEL_THICKNESS = 22; // mm timber cladding thickness
+const YTTERPANEL_BOARD_WIDTH = 145; // mm total board width
+const YTTERPANEL_VISIBLE_WIDTH = 127; // mm mounted cover width for 22x145 falsad sparpanel
+const YTTERPANEL_OVERLAP_WIDTH = 18; // mm front lip covering the next board joint
+const YTTERPANEL_FALSE_WIDTH = 28; // mm relieved false on the opposite edge
+const YTTERPANEL_RABBET_DEPTH = 11; // mm complementary half-lap depth per edge
+const YTTERPANEL_FALSE_FACE_ANGLE = 25; // degrees from the front face on both profile shoulders
+const YTTERPANEL_FACE_CHAMFER = 2; // mm visible chamfer on both front board edges
+const YTTERPANEL_SEAM_SHADOW_WIDTH = 3; // mm subtle visible reveal between boards
+const YTTERPANEL_SEAM_SHADOW_DEPTH = 0.8; // mm thin shadow strip kept flush to the face
 const MUSBAND_HEIGHT = 20; // mm starter leg height against the wall
 const MUSBAND_THICKNESS = 1; // mm sheet metal thickness
-const MUSBAND_PROJECTION = 28; // mm outward projection from the wall via the comb teeth
+const MUSBAND_PROJECTION = 50; // mm outward projection from the wall via the comb teeth
 const MUSBAND_COMB_TOOTH_WIDTH = 4; // mm
 const MUSBAND_COMB_GAP_WIDTH = 4; // mm
 const MUSBAND_FLANGE_TILT = (-15 * Math.PI) / 180; // slight tilt from a perfect 90-degree bend
@@ -122,28 +137,203 @@ function getExteriorCoverageRange(wall: Wall, layerThicknessMm: number) {
 }
 
 function createMusbandTeeth(length: number) {
-  const combPitch = (MUSBAND_COMB_TOOTH_WIDTH + MUSBAND_COMB_GAP_WIDTH) * MM;
   const toothWidth = MUSBAND_COMB_TOOTH_WIDTH * MM;
-  const edgePadding = Math.min(0.02, Math.max(0.01, length * 0.025));
-  const usableLength = Math.max(length - edgePadding * 2, 0);
-  const toothCount = Math.max(1, Math.floor(usableLength / combPitch));
+  const preferredGap = MUSBAND_COMB_GAP_WIDTH * MM;
 
-  if (usableLength < toothWidth + 0.001) {
+  if (length <= toothWidth + 0.001) {
     return [
       { key: "tooth-0", centerX: 0, width: Math.min(length, toothWidth) },
     ];
   }
 
-  const startCenter = -length / 2 + edgePadding + toothWidth / 2;
-  const endCenter = length / 2 - edgePadding - toothWidth / 2;
-  const step =
-    toothCount > 1 ? (endCenter - startCenter) / (toothCount - 1) : 0;
+  const toothCount = Math.max(
+    2,
+    Math.floor((length + preferredGap) / (toothWidth + preferredGap)),
+  );
+  const totalToothWidth = toothCount * toothWidth;
+  const gapCount = toothCount - 1;
+  const distributedGap =
+    gapCount > 0 ? (length - totalToothWidth) / gapCount : 0;
+  const startCenter = -length / 2 + toothWidth / 2;
 
   return Array.from({ length: toothCount }, (_, index) => ({
     key: `tooth-${index}`,
-    centerX: toothCount === 1 ? 0 : startCenter + step * index,
+    centerX: startCenter + index * (toothWidth + distributedGap),
     width: toothWidth,
   }));
+}
+
+function hashSeed(seed: string) {
+  let hash = 2166136261;
+
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return hash >>> 0;
+}
+
+function getDeterministicUnitValue(seed: string) {
+  return hashSeed(seed) / 4294967295;
+}
+
+function cloneTextureWithLengthwiseOffset(
+  texture: THREE.Texture,
+  seed: string,
+  axis: "x" | "y",
+) {
+  const clone = texture.clone();
+  const offset = getDeterministicUnitValue(`${seed}-offset`);
+
+  clone.wrapS = texture.wrapS;
+  clone.wrapT = texture.wrapT;
+  clone.repeat.copy(texture.repeat);
+  clone.offset.copy(texture.offset);
+  clone.center.copy(texture.center);
+  clone.rotation = texture.rotation;
+  clone.flipY = texture.flipY;
+  clone.colorSpace = texture.colorSpace;
+
+  if (axis === "x") {
+    clone.offset.x = THREE.MathUtils.euclideanModulo(
+      clone.offset.x + offset,
+      1,
+    );
+  } else {
+    clone.offset.y = THREE.MathUtils.euclideanModulo(
+      clone.offset.y + offset,
+      1,
+    );
+  }
+
+  clone.needsUpdate = true;
+  return clone;
+}
+
+function getSubtleWoodColor(seed: string) {
+  const color = new THREE.Color(STUD_COLOR);
+  const lightnessOffset =
+    (getDeterministicUnitValue(`${seed}-lightness`) - 0.5) * 0.1;
+  color.offsetHSL(0, 0, lightnessOffset);
+  return `#${color.getHexString()}`;
+}
+
+function getSubtleWoodRoughness(seed: string) {
+  return 0.78 + getDeterministicUnitValue(`${seed}-roughness`) * 0.14;
+}
+
+function getSubtlePaintColor(seed: string) {
+  const color = new THREE.Color(PRIMED_PANEL_COLOR);
+  const saturationOffset =
+    (getDeterministicUnitValue(`${seed}-paint-saturation`) - 0.5) * 0.006;
+  const lightnessOffset =
+    (getDeterministicUnitValue(`${seed}-paint-lightness`) - 0.5) * 0.02;
+  color.offsetHSL(0, saturationOffset, lightnessOffset);
+  return `#${color.getHexString()}`;
+}
+
+function getSubtlePaintOpacity(seed: string) {
+  return 0.9 + getDeterministicUnitValue(`${seed}-paint-opacity`) * 0.06;
+}
+
+function createYtterpanelBoardGeometry({
+  boardWidth,
+  wallHeight,
+  thickness,
+  leftLapWidth,
+  rightLapWidth,
+  rabbetDepth,
+  falseFaceAngle,
+  faceChamfer,
+}: {
+  boardWidth: number;
+  wallHeight: number;
+  thickness: number;
+  leftLapWidth: number;
+  rightLapWidth: number;
+  rabbetDepth: number;
+  falseFaceAngle: number;
+  faceChamfer: number;
+}) {
+  const clampedWidth = Math.max(boardWidth, 0.001);
+  const clampedThickness = Math.max(thickness, 0.001);
+  const clampedRabbetDepth = Math.min(rabbetDepth, clampedThickness);
+  const clampedLeftLap = Math.min(leftLapWidth, clampedWidth);
+  const clampedRightLap = Math.min(
+    rightLapWidth,
+    Math.max(clampedWidth - clampedLeftLap, 0),
+  );
+  const frontRightX = clampedWidth - clampedRightLap;
+  const falseFaceAngleRadians = THREE.MathUtils.degToRad(
+    Math.max(falseFaceAngle, 0.001),
+  );
+  const clampedFaceChamfer = Math.min(
+    faceChamfer,
+    clampedThickness / 2,
+    clampedWidth / 4,
+  );
+  const profileHeightDelta = Math.max(
+    clampedThickness - clampedRabbetDepth - clampedFaceChamfer,
+    0,
+  );
+  const slopeRunFromFace = profileHeightDelta * Math.tan(falseFaceAngleRadians);
+  const leftSlopeTopX = Math.min(slopeRunFromFace, frontRightX);
+  const rightSlopeTopX = Math.max(
+    frontRightX - Math.min(slopeRunFromFace, frontRightX),
+    leftSlopeTopX,
+  );
+  const leftFaceStartX = Math.min(
+    leftSlopeTopX + clampedFaceChamfer,
+    rightSlopeTopX,
+  );
+  const rightFaceEndX = Math.max(
+    rightSlopeTopX - clampedFaceChamfer,
+    leftFaceStartX,
+  );
+  const chamferBaseY = Math.max(clampedThickness - clampedFaceChamfer, 0);
+
+  const profile = new THREE.Shape();
+
+  if (clampedLeftLap > 0) {
+    profile.moveTo(0, clampedRabbetDepth);
+    profile.lineTo(leftSlopeTopX, chamferBaseY);
+    profile.lineTo(leftFaceStartX, clampedThickness);
+  } else {
+    profile.moveTo(0, 0);
+    profile.lineTo(0, chamferBaseY);
+    profile.lineTo(clampedFaceChamfer, clampedThickness);
+  }
+
+  if (clampedRightLap > 0) {
+    profile.lineTo(rightFaceEndX, clampedThickness);
+    profile.lineTo(rightSlopeTopX, chamferBaseY);
+    profile.lineTo(frontRightX, clampedRabbetDepth);
+    profile.lineTo(clampedWidth, clampedRabbetDepth);
+    profile.lineTo(clampedWidth, 0);
+  } else {
+    profile.lineTo(clampedWidth - clampedFaceChamfer, clampedThickness);
+    profile.lineTo(clampedWidth, chamferBaseY);
+    profile.lineTo(clampedWidth, 0);
+  }
+
+  if (clampedLeftLap > 0) {
+    profile.lineTo(clampedLeftLap, 0);
+    profile.lineTo(clampedLeftLap, clampedThickness - clampedRabbetDepth);
+  } else {
+    profile.lineTo(0, 0);
+  }
+
+  profile.closePath();
+
+  const geometry = new THREE.ExtrudeGeometry(profile, {
+    depth: wallHeight,
+    bevelEnabled: false,
+  });
+
+  geometry.rotateX(-Math.PI / 2);
+
+  return geometry;
 }
 
 const PRESETS: LayoutPreset[] = [
@@ -1069,6 +1259,303 @@ function WallMusband({
   );
 }
 
+/** Horizontal spikläkt creating the ventilated cavity behind standing cladding */
+function WallSpiklakt({
+  wall,
+  wallHeight,
+  outsideInsulation,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  outsideInsulation: number;
+}) {
+  const pineTexture = useMemo(() => getPineTexture(), []);
+
+  const battens = useMemo(() => {
+    const coverageLayer =
+      outsideInsulation > 0 ? outsideInsulation : HOUSE_WRAP_THICKNESS;
+    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
+      wall,
+      coverageLayer,
+    );
+    const length = Math.max(coverageEnd - coverageStart, 0.001) * MM;
+    const thickness = SPIKLAKT_THICKNESS * MM;
+    const height = SPIKLAKT_HEIGHT * MM;
+    const wallHeightM = wallHeight * MM;
+    const framingDepth = wall.thickness * MM;
+    const weatherLayerDepth =
+      outsideInsulation > 0
+        ? framingDepth / 2 + outsideInsulation * MM
+        : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
+
+    const rows: { key: string; pos: [number, number, number] }[] = [];
+    let centerY = height / 2;
+    let rowIndex = 0;
+
+    while (centerY < wallHeightM - height / 2 - 0.001) {
+      rows.push({
+        key: `spiklakt-${rowIndex}`,
+        pos: [
+          coverageStart * MM + length / 2,
+          centerY,
+          -(weatherLayerDepth + thickness / 2),
+        ],
+      });
+      centerY += SPIKLAKT_SPACING * MM;
+      rowIndex += 1;
+    }
+
+    const topRowY = Math.max(height / 2, wallHeightM - height / 2);
+    if (rows.length === 0 || rows[rows.length - 1].pos[1] < topRowY - 0.001) {
+      rows.push({
+        key: `spiklakt-${rowIndex}`,
+        pos: [
+          coverageStart * MM + length / 2,
+          topRowY,
+          -(weatherLayerDepth + thickness / 2),
+        ],
+      });
+    }
+
+    return {
+      size: [length, height, thickness] as [number, number, number],
+      rows: rows.map((row) => ({
+        ...row,
+        color: getSubtleWoodColor(row.key),
+        roughness: getSubtleWoodRoughness(row.key),
+        texture: cloneTextureWithLengthwiseOffset(pineTexture, row.key, "x"),
+      })),
+    };
+  }, [outsideInsulation, pineTexture, wall, wallHeight]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {battens.rows.map((batten) => (
+        <group key={batten.key} position={batten.pos}>
+          <mesh castShadow receiveShadow renderOrder={2}>
+            <boxGeometry args={battens.size} />
+            <meshStandardMaterial
+              map={batten.texture}
+              color={batten.color}
+              roughness={batten.roughness}
+              metalness={0}
+            />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(...battens.size)]} />
+            <lineBasicMaterial color="#7f5a38" linewidth={1} />
+          </lineSegments>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+/** Overlapping falsad sparpanel mounted on horizontal spikläkt */
+function WallStandingExteriorPanel({
+  wall,
+  wallHeight,
+  outsideInsulation,
+  showPrimedWhite,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  outsideInsulation: number;
+  showPrimedWhite: boolean;
+}) {
+  const pineTexture = useMemo(() => getPineTexture(), []);
+
+  const panelData = useMemo(() => {
+    const coverageLayer =
+      outsideInsulation > 0 ? outsideInsulation : HOUSE_WRAP_THICKNESS;
+    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
+      wall,
+      coverageLayer,
+    );
+    const wallHeightM = wallHeight * MM;
+    const panelThickness = YTTERPANEL_THICKNESS * MM;
+    const boardWidth = YTTERPANEL_BOARD_WIDTH * MM;
+    const visibleWidth = YTTERPANEL_VISIBLE_WIDTH * MM;
+    const overlapWidth = Math.min(YTTERPANEL_OVERLAP_WIDTH * MM, boardWidth);
+    const falseWidth = Math.min(YTTERPANEL_FALSE_WIDTH * MM, boardWidth);
+    const rabbetDepth = Math.min(YTTERPANEL_RABBET_DEPTH * MM, panelThickness);
+    const seamShadowWidth = YTTERPANEL_SEAM_SHADOW_WIDTH * MM;
+    const seamShadowDepth = YTTERPANEL_SEAM_SHADOW_DEPTH * MM;
+    const totalLength = Math.max(coverageEnd - coverageStart, 0.001) * MM;
+    const framingDepth = wall.thickness * MM;
+    const weatherLayerDepth =
+      outsideInsulation > 0
+        ? framingDepth / 2 + outsideInsulation * MM
+        : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
+    const panelBackZ = -(weatherLayerDepth + FACADE_AIR_GAP * MM);
+
+    const boards: {
+      key: string;
+      pos: [number, number, number];
+      geometry: THREE.ExtrudeGeometry;
+      color: string;
+      roughness: number;
+      texture: THREE.Texture;
+      paintColor: string;
+      paintOpacity: number;
+    }[] = [];
+    const seamShadows: {
+      key: string;
+      pos: [number, number, number];
+      size: [number, number, number];
+    }[] = [];
+
+    let boardStart = 0;
+    let index = 0;
+    while (boardStart < totalLength - 0.001) {
+      const remainingWidth = totalLength - boardStart;
+      const actualBoardWidth = Math.max(
+        Math.min(boardWidth, remainingWidth),
+        0.001,
+      );
+      const isFirst = index === 0;
+      const isLast = boardStart + boardWidth >= totalLength - 0.001;
+      const leftLapWidth = isFirst
+        ? 0
+        : Math.min(overlapWidth, actualBoardWidth);
+      const rightLapWidth = isLast
+        ? 0
+        : Math.min(falseWidth, Math.max(actualBoardWidth - leftLapWidth, 0));
+      const centerWidth = Math.max(
+        actualBoardWidth - leftLapWidth - rightLapWidth,
+        0,
+      );
+      if (
+        actualBoardWidth > 0 &&
+        (centerWidth > 0 || leftLapWidth > 0 || rightLapWidth > 0)
+      ) {
+        const boardSeed = `panel-${wall.id}-${index}`;
+        boards.push({
+          key: `panel-${index}`,
+          pos: [boardStart, 0, panelBackZ],
+          color: getSubtleWoodColor(boardSeed),
+          roughness: getSubtleWoodRoughness(boardSeed),
+          geometry: createYtterpanelBoardGeometry({
+            boardWidth: actualBoardWidth,
+            wallHeight: wallHeightM,
+            thickness: panelThickness,
+            leftLapWidth,
+            rightLapWidth,
+            rabbetDepth,
+            falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
+            faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
+          }),
+          texture: cloneTextureWithLengthwiseOffset(
+            pineTexture,
+            boardSeed,
+            "y",
+          ),
+          paintColor: getSubtlePaintColor(boardSeed),
+          paintOpacity: getSubtlePaintOpacity(boardSeed),
+        });
+
+        if (!isFirst) {
+          seamShadows.push({
+            key: `panel-seam-${index}`,
+            pos: [
+              boardStart + leftLapWidth,
+              wallHeightM / 2,
+              panelBackZ - panelThickness + seamShadowDepth / 2,
+            ],
+            size: [
+              Math.min(seamShadowWidth, leftLapWidth),
+              wallHeightM,
+              seamShadowDepth,
+            ],
+          });
+        }
+      }
+
+      boardStart += visibleWidth;
+      index += 1;
+    }
+
+    return {
+      rootX: coverageStart * MM,
+      boards,
+      seamShadows,
+    };
+  }, [outsideInsulation, pineTexture, wall, wallHeight]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      <group position={[panelData.rootX, 0, 0]}>
+        {panelData.seamShadows.map((seam) => (
+          <group key={seam.key} position={seam.pos}>
+            <mesh renderOrder={3}>
+              <boxGeometry args={seam.size} />
+              <meshStandardMaterial
+                color="#4a3725"
+                roughness={1}
+                metalness={0}
+                transparent
+                opacity={0.18}
+              />
+            </mesh>
+          </group>
+        ))}
+        {panelData.boards.map((part) => (
+          <group key={part.key} position={part.pos}>
+            <mesh
+              castShadow
+              receiveShadow
+              renderOrder={2}
+              geometry={part.geometry}
+            >
+              <meshStandardMaterial
+                map={part.texture}
+                color={showPrimedWhite ? PRIMED_PANEL_BASE_COLOR : part.color}
+                roughness={showPrimedWhite ? 0.9 : part.roughness}
+                metalness={0}
+              />
+            </mesh>
+            {showPrimedWhite && (
+              <mesh receiveShadow renderOrder={3} geometry={part.geometry}>
+                <meshStandardMaterial
+                  color={part.paintColor}
+                  roughness={0.97}
+                  metalness={0}
+                  transparent
+                  opacity={part.paintOpacity}
+                  depthWrite={false}
+                  polygonOffset
+                  polygonOffsetFactor={-1}
+                  polygonOffsetUnits={-1}
+                />
+              </mesh>
+            )}
+          </group>
+        ))}
+      </group>
+    </group>
+  );
+}
+
 /** Thin vapor barrier on the interior face of the framing */
 function WallVaporBarrier({
   wall,
@@ -1649,6 +2136,8 @@ function WallLayoutModel({
   showCavityInsulation,
   showHouseWrap,
   showMusband,
+  showStandingExteriorPanel,
+  showPrimedWhiteExteriorPanel,
   showVaporBarrier,
   showFraming,
   showVerticalTopPlate,
@@ -1670,6 +2159,8 @@ function WallLayoutModel({
   showCavityInsulation: boolean;
   showHouseWrap: boolean;
   showMusband: boolean;
+  showStandingExteriorPanel: boolean;
+  showPrimedWhiteExteriorPanel: boolean;
   showVaporBarrier: boolean;
   showFraming: boolean;
   showVerticalTopPlate: boolean;
@@ -1726,6 +2217,27 @@ function WallLayoutModel({
             key={`musband-${w.id}`}
             wall={w}
             outsideInsulation={outsideInsulation}
+          />
+        ))}
+
+      {showStandingExteriorPanel &&
+        framingLayout.walls.map((w) => (
+          <WallSpiklakt
+            key={`spiklakt-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+            outsideInsulation={outsideInsulation}
+          />
+        ))}
+
+      {showStandingExteriorPanel &&
+        framingLayout.walls.map((w) => (
+          <WallStandingExteriorPanel
+            key={`ytterpanel-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+            outsideInsulation={outsideInsulation}
+            showPrimedWhite={showPrimedWhiteExteriorPanel}
           />
         ))}
 
@@ -1816,6 +2328,10 @@ export default function WallLayoutScene() {
   const [showFraming, setShowFraming] = useState(true);
   const [showHouseWrap, setShowHouseWrap] = useState(false);
   const [showMusband, setShowMusband] = useState(false);
+  const [showStandingExteriorPanel, setShowStandingExteriorPanel] =
+    useState(false);
+  const [showPrimedWhiteExteriorPanel, setShowPrimedWhiteExteriorPanel] =
+    useState(false);
   const [showVaporBarrier, setShowVaporBarrier] = useState(false);
   const [showOsb, setShowOsb] = useState(false);
   const [showDrywall, setShowDrywall] = useState(false);
@@ -2123,6 +2639,16 @@ export default function WallLayoutScene() {
                   toggle: () => setShowMusband((v) => !v),
                 },
                 {
+                  label: "Falsad spårpanel",
+                  checked: showStandingExteriorPanel,
+                  toggle: () => setShowStandingExteriorPanel((v) => !v),
+                },
+                {
+                  label: "Grundmålad vit panel",
+                  checked: showPrimedWhiteExteriorPanel,
+                  toggle: () => setShowPrimedWhiteExteriorPanel((v) => !v),
+                },
+                {
                   label: "Vapor barrier",
                   checked: showVaporBarrier,
                   toggle: () => setShowVaporBarrier((v) => !v),
@@ -2176,6 +2702,18 @@ export default function WallLayoutScene() {
               <div>Antal väggar: {layout.count}</div>
               <div>Outside insulation: {outsideInsulation} mm</div>
               <div>Ventilerad luftspalt bakom fasad: {FACADE_AIR_GAP} mm</div>
+              <div>
+                Falsad spårpanel: 22x{YTTERPANEL_BOARD_WIDTH} mm med{" "}
+                {YTTERPANEL_OVERLAP_WIDTH}
+                mm överlapp och {YTTERPANEL_FALSE_WIDTH} mm fals, täckande bredd{" "}
+                {YTTERPANEL_VISIBLE_WIDTH} mm, {YTTERPANEL_FALSE_FACE_ANGLE}°
+                falsvinkel, {YTTERPANEL_FACE_CHAMFER} mm fasade kanter och
+                horisontell spikläkt {SPIKLAKT_THICKNESS} mm
+              </div>
+              <div>
+                Ytbehandling panel:{" "}
+                {showPrimedWhiteExteriorPanel ? "grundmålad vit" : "trären"}
+              </div>
               <div>
                 Musband: bockad kamprofil, utstick {MUSBAND_PROJECTION} mm
               </div>
@@ -2286,6 +2824,8 @@ export default function WallLayoutScene() {
             showCavityInsulation={showCavityInsulation}
             showHouseWrap={showHouseWrap}
             showMusband={showMusband}
+            showStandingExteriorPanel={showStandingExteriorPanel}
+            showPrimedWhiteExteriorPanel={showPrimedWhiteExteriorPanel}
             showVaporBarrier={showVaporBarrier}
             showFraming={showFraming}
             showVerticalTopPlate={showVerticalTopPlate}

@@ -2,6 +2,8 @@ import * as THREE from "three";
 
 let cachedTexture: THREE.CanvasTexture | null = null;
 let cachedOsbTexture: THREE.CanvasTexture | null = null;
+let cachedLightPineTexture: THREE.CanvasTexture | null = null;
+let cachedFacadePineTexture: THREE.CanvasTexture | null = null;
 
 /** Seeded PRNG for deterministic textures */
 function mulberry32(seed: number) {
@@ -119,6 +121,215 @@ export function getPineTexture(): THREE.CanvasTexture {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
   cachedTexture = texture;
+  return texture;
+}
+
+/** Lighter and cleaner pine texture tuned for visible facade cladding */
+export function getLightPineTexture(): THREE.CanvasTexture {
+  if (cachedLightPineTexture) return cachedLightPineTexture;
+
+  const rand = mulberry32(31415);
+  const w = 512;
+  const h = 1024;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+
+  const baseGradient = ctx.createLinearGradient(0, 0, 0, h);
+  baseGradient.addColorStop(0, "#f6e7cb");
+  baseGradient.addColorStop(0.5, "#f1ddb8");
+  baseGradient.addColorStop(1, "#ead2a8");
+  ctx.fillStyle = baseGradient;
+  ctx.fillRect(0, 0, w, h);
+
+  for (let i = 0; i < 16; i++) {
+    const gx = rand() * w;
+    const gy = rand() * h;
+    const radius = 70 + rand() * 150;
+    const gradient = ctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
+    gradient.addColorStop(0, `rgba(255, 245, 220, ${0.1 + rand() * 0.06})`);
+    gradient.addColorStop(0.65, `rgba(226, 194, 142, ${0.08 + rand() * 0.08})`);
+    gradient.addColorStop(1, "rgba(226, 194, 142, 0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  for (let i = 0; i < 170; i++) {
+    const x = rand() * w;
+    const lineW = 0.5 + rand() * 2.2;
+    const alpha = 0.06 + rand() * 0.12;
+    ctx.strokeStyle =
+      rand() > 0.25
+        ? `rgba(178, 135, 77, ${alpha})`
+        : `rgba(232, 204, 160, ${alpha + 0.03})`;
+    ctx.lineWidth = lineW;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    const segments = 14 + Math.floor(rand() * 12);
+    for (let s = 1; s <= segments; s++) {
+      const sy = (s / segments) * h;
+      const sway = Math.sin(s * 0.8 + x * 0.04) * (1 + rand() * 1.2);
+      const sx = x + sway + (rand() - 0.5) * 2;
+      ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < 36; i++) {
+    const y = rand() * h;
+    const bandH = 2 + rand() * 6;
+    ctx.fillStyle =
+      rand() > 0.5
+        ? `rgba(171, 128, 73, ${0.07 + rand() * 0.06})`
+        : `rgba(247, 228, 191, ${0.05 + rand() * 0.04})`;
+    ctx.fillRect(0, y, w, bandH);
+  }
+
+  const knotCount = 1 + Math.floor(rand() * 2);
+  for (let i = 0; i < knotCount; i++) {
+    const kx = 60 + rand() * (w - 120);
+    const ky = 100 + rand() * (h - 200);
+    const rx = 5 + rand() * 8;
+    const ry = 10 + rand() * 16;
+    const gradient = ctx.createRadialGradient(
+      kx,
+      ky,
+      0,
+      kx,
+      ky,
+      Math.max(rx, ry) * 1.8,
+    );
+    gradient.addColorStop(0, "rgba(147, 102, 48, 0.34)");
+    gradient.addColorStop(0.45, "rgba(182, 135, 78, 0.18)");
+    gradient.addColorStop(1, "rgba(236, 208, 166, 0)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.ellipse(kx, ky, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const px = imageData.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const noise = (rand() - 0.5) * 6 + 5;
+    px[i] = Math.min(255, Math.max(0, px[i] + noise));
+    px[i + 1] = Math.min(255, Math.max(0, px[i + 1] + noise));
+    px[i + 2] = Math.min(255, Math.max(0, px[i + 2] + noise));
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  cachedLightPineTexture = texture;
+  return texture;
+}
+
+/** Subtle planed pine texture tuned for painted or freshly milled facade boards */
+export function getFacadePineTexture(): THREE.CanvasTexture {
+  if (cachedFacadePineTexture) return cachedFacadePineTexture;
+
+  const rand = mulberry32(271828);
+  const w = 768;
+  const h = 1536;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+
+  const baseGradient = ctx.createLinearGradient(0, 0, 0, h);
+  baseGradient.addColorStop(0, "#f6e9cf");
+  baseGradient.addColorStop(0.45, "#f1e0c0");
+  baseGradient.addColorStop(1, "#e8d0ab");
+  ctx.fillStyle = baseGradient;
+  ctx.fillRect(0, 0, w, h);
+
+  for (let i = 0; i < 10; i++) {
+    const gx = rand() * w;
+    const gy = rand() * h;
+    const radius = 140 + rand() * 220;
+    const gradient = ctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
+    gradient.addColorStop(0, `rgba(255, 247, 229, ${0.08 + rand() * 0.04})`);
+    gradient.addColorStop(0.6, `rgba(225, 196, 148, ${0.04 + rand() * 0.04})`);
+    gradient.addColorStop(1, "rgba(225, 196, 148, 0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  for (let i = 0; i < 220; i++) {
+    const x = rand() * w;
+    const alpha = 0.035 + rand() * 0.05;
+    const width = 0.4 + rand() * 1.3;
+    ctx.strokeStyle =
+      rand() > 0.3
+        ? `rgba(164, 123, 72, ${alpha})`
+        : `rgba(241, 226, 195, ${alpha + 0.02})`;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    const segments = 20 + Math.floor(rand() * 12);
+    for (let s = 1; s <= segments; s++) {
+      const sy = (s / segments) * h;
+      const sway = Math.sin(s * 0.7 + x * 0.018) * (0.5 + rand() * 1.1);
+      ctx.lineTo(x + sway, sy);
+    }
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < 50; i++) {
+    const y = rand() * h;
+    const bandH = 1 + rand() * 4;
+    ctx.fillStyle =
+      rand() > 0.5
+        ? `rgba(173, 132, 80, ${0.03 + rand() * 0.03})`
+        : `rgba(250, 240, 217, ${0.02 + rand() * 0.03})`;
+    ctx.fillRect(0, y, w, bandH);
+  }
+
+  const knotCount = 1 + Math.floor(rand() * 2);
+  for (let i = 0; i < knotCount; i++) {
+    const kx = 120 + rand() * (w - 240);
+    const ky = 180 + rand() * (h - 360);
+    const rx = 4 + rand() * 7;
+    const ry = 9 + rand() * 12;
+    const gradient = ctx.createRadialGradient(
+      kx,
+      ky,
+      0,
+      kx,
+      ky,
+      Math.max(rx, ry) * 2,
+    );
+    gradient.addColorStop(0, "rgba(150, 103, 54, 0.18)");
+    gradient.addColorStop(0.45, "rgba(182, 136, 84, 0.1)");
+    gradient.addColorStop(1, "rgba(238, 215, 177, 0)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.ellipse(kx, ky, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const px = imageData.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const noise = (rand() - 0.5) * 4 + 2;
+    px[i] = Math.min(255, Math.max(0, px[i] + noise));
+    px[i + 1] = Math.min(255, Math.max(0, px[i + 1] + noise));
+    px[i + 2] = Math.min(255, Math.max(0, px[i + 2] + noise));
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+  cachedFacadePineTexture = texture;
   return texture;
 }
 
