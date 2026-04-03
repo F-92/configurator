@@ -24,7 +24,10 @@ import {
   splitVerticalSpan,
 } from "../lib/wallLayout/openings";
 import { getOsbTexture, getPineTexture } from "../lib/woodTexture";
-import { buildParametricLayout } from "../lib/wallLayout/parametric";
+import {
+  buildParametricLayout,
+  computeInnerCorners,
+} from "../lib/wallLayout/parametric";
 import type {
   ParametricWall,
   LayerDef,
@@ -1667,25 +1670,25 @@ function WallHouseWrap({
 /** Bent metal comb profile at the base of the ventilated facade cavity */
 function WallMusband({
   wall,
-  layerEdges,
+  slabCorners,
 }: {
   wall: Wall;
-  layerEdges: WallLayerEdges;
+  slabCorners: { x: number; y: number }[];
 }) {
   const strip = useMemo(() => {
-    const edge = layerEdges.weatherSurface;
-    const { coverageStart, coverageEnd, outerFaceZ } = edge;
-    const length = Math.max(coverageEnd - coverageStart, 0.001) * MM;
+    // Musband spans the slab edge for this wall — position directly from slab corners.
+    const sc0 = slabCorners[wall.index];
+    const sc1 = slabCorners[(wall.index + 1) % slabCorners.length];
+    const length = Math.hypot(sc1.x - sc0.x, sc1.y - sc0.y) * MM;
     const height = MUSBAND_HEIGHT * MM;
     const projection = MUSBAND_PROJECTION * MM;
     const thickness = MUSBAND_THICKNESS * MM;
+    // World-space midpoint of the slab edge
+    const midX = ((sc0.x + sc1.x) / 2) * MM;
+    const midZ = -((sc0.y + sc1.y) / 2) * MM;
 
     return {
-      rootPos: [coverageStart * MM + length / 2, 0, outerFaceZ] as [
-        number,
-        number,
-        number,
-      ],
+      position: [midX, 0, midZ] as [number, number, number],
       backStripSize: [length, height, thickness] as [number, number, number],
       backStripPos: [0, height / 2, -thickness / 2] as [number, number, number],
       teeth: createMusbandTeeth(length).map((tooth) => ({
@@ -1698,61 +1701,49 @@ function WallMusband({
         size: [tooth.width, thickness, projection] as [number, number, number],
       })),
     };
-  }, [layerEdges, wall]);
-
-  const { position, rotationY } = useMemo(() => {
-    const q = wall.quad;
-    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
-    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
-    return {
-      position: [px, 0, pz] as [number, number, number],
-      rotationY: wall.angle,
-    };
-  }, [wall]);
+  }, [wall, slabCorners]);
 
   return (
-    <group position={position} rotation={[0, rotationY, 0]}>
-      <group position={strip.rootPos}>
-        <group position={strip.backStripPos}>
-          <mesh castShadow receiveShadow renderOrder={2}>
-            <boxGeometry args={strip.backStripSize} />
-            <meshStandardMaterial
-              color="#9ca3af"
-              roughness={0.45}
-              metalness={0.9}
-            />
-          </mesh>
-          <lineSegments>
-            <edgesGeometry
-              args={[new THREE.BoxGeometry(...strip.backStripSize)]}
-            />
-            <lineBasicMaterial color="#6b7280" linewidth={1} />
-          </lineSegments>
-        </group>
-
-        {strip.teeth.map((tooth) => (
-          <group
-            key={tooth.key}
-            position={tooth.pos}
-            rotation={[MUSBAND_FLANGE_TILT, 0, 0]}
-          >
-            <group position={[0, 0, -tooth.size[2] / 2]}>
-              <mesh castShadow receiveShadow renderOrder={2}>
-                <boxGeometry args={tooth.size} />
-                <meshStandardMaterial
-                  color="#9ca3af"
-                  roughness={0.45}
-                  metalness={0.9}
-                />
-              </mesh>
-              <lineSegments>
-                <edgesGeometry args={[new THREE.BoxGeometry(...tooth.size)]} />
-                <lineBasicMaterial color="#6b7280" linewidth={1} />
-              </lineSegments>
-            </group>
-          </group>
-        ))}
+    <group position={strip.position} rotation={[0, wall.angle, 0]}>
+      <group position={strip.backStripPos}>
+        <mesh castShadow receiveShadow renderOrder={2}>
+          <boxGeometry args={strip.backStripSize} />
+          <meshStandardMaterial
+            color="#9ca3af"
+            roughness={0.45}
+            metalness={0.9}
+          />
+        </mesh>
+        <lineSegments>
+          <edgesGeometry
+            args={[new THREE.BoxGeometry(...strip.backStripSize)]}
+          />
+          <lineBasicMaterial color="#6b7280" linewidth={1} />
+        </lineSegments>
       </group>
+
+      {strip.teeth.map((tooth) => (
+        <group
+          key={tooth.key}
+          position={tooth.pos}
+          rotation={[MUSBAND_FLANGE_TILT, 0, 0]}
+        >
+          <group position={[0, 0, -tooth.size[2] / 2]}>
+            <mesh castShadow receiveShadow renderOrder={2}>
+              <boxGeometry args={tooth.size} />
+              <meshStandardMaterial
+                color="#9ca3af"
+                roughness={0.45}
+                metalness={0.9}
+              />
+            </mesh>
+            <lineSegments>
+              <edgesGeometry args={[new THREE.BoxGeometry(...tooth.size)]} />
+              <lineBasicMaterial color="#6b7280" linewidth={1} />
+            </lineSegments>
+          </group>
+        </group>
+      ))}
     </group>
   );
 }
@@ -2005,8 +1996,7 @@ function WallStandingExteriorPanel({
     const boards: {
       key: string;
       pos: [number, number, number];
-      geometry?: THREE.ExtrudeGeometry;
-      size?: [number, number, number];
+      geometry: THREE.ExtrudeGeometry;
       color: string;
       roughness: number;
       texture: THREE.Texture;
@@ -2044,72 +2034,46 @@ function WallStandingExteriorPanel({
         actualBoardWidth > 0 &&
         (centerWidth > 0 || leftLapWidth > 0 || rightLapWidth > 0)
       ) {
-        // 2D-subtract openings from this board's rectangle
         const boardLeftMm = coverageStart + boardStart / MM;
-        const boardWidthMm = actualBoardWidth / MM;
-        const pieces = subtractOpeningsFromRect(
-          boardLeftMm,
+        const boardSeed = `panel-${wall.id}-${index}`;
+
+        // Split vertically around openings — each span is a profiled segment
+        const spans = splitVerticalSpan(
           0,
-          boardWidthMm,
           wallHeight,
+          boardLeftMm,
+          actualBoardWidth / MM,
           openings,
         );
 
-        for (let pi = 0; pi < pieces.length; pi++) {
-          const piece = pieces[pi];
-          const pieceWidthMm = piece.w;
-          const pieceHeightMm = piece.h;
-          const pieceHeight = pieceHeightMm * MM;
-          const pieceY = piece.y * MM;
-          const pieceXOffset = (piece.x - boardLeftMm) * MM;
-          const boardSeed = `panel-${wall.id}-${index}-${pi}`;
+        for (let si = 0; si < spans.length; si++) {
+          const span = spans[si];
+          const segH = (span.end - span.start) * MM;
+          const segY = span.start * MM;
 
-          // Full-width piece → use profiled spårpanel geometry
-          if (Math.abs(pieceWidthMm - boardWidthMm) < 1) {
-            boards.push({
-              key: `panel-${index}-${pi}`,
-              pos: [boardStart, pieceY, panelBackZ],
-              color: getSubtleWoodColor(boardSeed),
-              roughness: getSubtleWoodRoughness(boardSeed),
-              geometry: createYtterpanelBoardGeometry({
-                boardWidth: actualBoardWidth,
-                wallHeight: pieceHeight,
-                thickness: panelThickness,
-                leftLapWidth,
-                rightLapWidth,
-                rabbetDepth,
-                falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
-                faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
-              }),
-              texture: cloneTextureWithLengthwiseOffset(
-                pineTexture,
-                boardSeed,
-                "y",
-              ),
-              paintColor: getSubtlePaintColor(boardSeed),
-              paintOpacity: getSubtlePaintOpacity(boardSeed),
-            });
-          } else {
-            // Partial-width fill piece beside opening → flat panel
-            boards.push({
-              key: `panel-${index}-${pi}`,
-              pos: [
-                boardStart + pieceXOffset + (pieceWidthMm * MM) / 2,
-                pieceY + pieceHeight / 2,
-                panelBackZ - panelThickness / 2,
-              ],
-              size: [pieceWidthMm * MM, pieceHeight, panelThickness],
-              color: getSubtleWoodColor(boardSeed),
-              roughness: getSubtleWoodRoughness(boardSeed),
-              texture: cloneTextureWithLengthwiseOffset(
-                pineTexture,
-                boardSeed,
-                "y",
-              ),
-              paintColor: getSubtlePaintColor(boardSeed),
-              paintOpacity: getSubtlePaintOpacity(boardSeed),
-            });
-          }
+          boards.push({
+            key: `panel-${index}-${si}`,
+            pos: [boardStart, segY, panelBackZ],
+            geometry: createYtterpanelBoardGeometry({
+              boardWidth: actualBoardWidth,
+              wallHeight: segH,
+              thickness: panelThickness,
+              leftLapWidth,
+              rightLapWidth,
+              rabbetDepth,
+              falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
+              faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
+            }),
+            color: getSubtleWoodColor(boardSeed),
+            roughness: getSubtleWoodRoughness(boardSeed),
+            texture: cloneTextureWithLengthwiseOffset(
+              pineTexture,
+              boardSeed,
+              "y",
+            ),
+            paintColor: getSubtlePaintColor(boardSeed),
+            paintOpacity: getSubtlePaintOpacity(boardSeed),
+          });
         }
 
         if (!isFirst) {
@@ -2188,7 +2152,6 @@ function WallStandingExteriorPanel({
               renderOrder={2}
               geometry={part.geometry}
             >
-              {part.size && <boxGeometry args={part.size} />}
               <meshStandardMaterial
                 map={part.texture}
                 color={showPrimedWhite ? PRIMED_PANEL_BASE_COLOR : part.color}
@@ -2198,7 +2161,6 @@ function WallStandingExteriorPanel({
             </mesh>
             {showPrimedWhite && (
               <mesh receiveShadow renderOrder={3} geometry={part.geometry}>
-                {part.size && <boxGeometry args={part.size} />}
                 <meshStandardMaterial
                   color={part.paintColor}
                   roughness={0.97}
@@ -2292,9 +2254,11 @@ function WallHorizontalExteriorPanel({
         actualBoardHeight > 0 &&
         (centerWidth > 0 || lowerLapWidth > 0 || upperFalseWidth > 0)
       ) {
-        // Split this board row horizontally around openings
         const boardBottomMm = boardStart / MM;
-        const pieces = splitHorizontalSpan(
+        const boardSeed = `horizontal-panel-${wall.id}-${index}`;
+
+        // Split horizontally around openings — each span is a profiled segment
+        const spans = splitHorizontalSpan(
           coverageStart,
           coverageEnd,
           boardBottomMm,
@@ -2302,19 +2266,17 @@ function WallHorizontalExteriorPanel({
           openings,
         );
 
-        for (let pi = 0; pi < pieces.length; pi++) {
-          const piece = pieces[pi];
-          const pieceLen = (piece.end - piece.start) * MM;
-          const pieceX = (piece.start - coverageStart) * MM;
-          const boardSeed = `horizontal-panel-${wall.id}-${index}-${pi}`;
+        for (let si = 0; si < spans.length; si++) {
+          const span = spans[si];
+          const segLen = (span.end - span.start) * MM;
+          const segX = (span.start - coverageStart) * MM;
+
           boards.push({
-            key: `horizontal-panel-${index}-${pi}`,
-            pos: [pieceX, boardStart, panelBackZ],
-            color: getSubtleWoodColor(boardSeed),
-            roughness: getSubtleWoodRoughness(boardSeed),
+            key: `horizontal-panel-${index}-${si}`,
+            pos: [segX, boardStart, panelBackZ],
             geometry: createLiggandeYtterpanelBoardGeometry({
               boardHeight: actualBoardHeight,
-              wallLength: pieceLen,
+              wallLength: segLen,
               thickness: panelThickness,
               leftLapWidth: lowerLapWidth,
               rightLapWidth: upperFalseWidth,
@@ -2322,6 +2284,8 @@ function WallHorizontalExteriorPanel({
               falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
               faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
             }),
+            color: getSubtleWoodColor(boardSeed),
+            roughness: getSubtleWoodRoughness(boardSeed),
             texture: cloneTextureWithLengthwiseOffset(
               pineTexture,
               boardSeed,
@@ -2725,10 +2689,9 @@ function WallDrywallBoards({
 }
 
 /** Floor slab visualisation */
-function FloorSlab({ layout }: { layout: LayoutLike }) {
+function FloorSlab({ corners }: { corners: { x: number; y: number }[] }) {
   const geometry = useMemo(() => {
     const shape = new THREE.Shape();
-    const corners = layout.outerCorners;
     shape.moveTo(corners[0].x * MM, corners[0].y * MM);
     for (let i = 1; i < corners.length; i++) {
       shape.lineTo(corners[i].x * MM, corners[i].y * MM);
@@ -2740,7 +2703,7 @@ function FloorSlab({ layout }: { layout: LayoutLike }) {
     geo.rotateX(-Math.PI / 2);
     geo.translate(0, -0.15, 0);
     return geo;
-  }, [layout]);
+  }, [corners]);
 
   return (
     <mesh geometry={geometry}>
@@ -3449,6 +3412,7 @@ function WallLayoutModel({
   osbLayout,
   drywallLayout,
   shellLayout,
+  slabCorners,
   wallHeight,
   outsideInsulation,
   outsideDrywall,
@@ -3483,6 +3447,7 @@ function WallLayoutModel({
   osbLayout: LayoutLike | null;
   drywallLayout: LayoutLike | null;
   shellLayout: LayoutLike;
+  slabCorners: { x: number; y: number }[];
   wallHeight: number;
   outsideInsulation: number;
   outsideDrywall: number;
@@ -3527,7 +3492,7 @@ function WallLayoutModel({
 
   return (
     <group>
-      <FloorSlab layout={shellLayout} />
+      <FloorSlab corners={slabCorners} />
 
       {(showFraming ? framingLayout.walls : shellLayout.walls).map((w) =>
         showFraming ? (
@@ -3576,7 +3541,7 @@ function WallLayoutModel({
           <WallMusband
             key={`musband-${w.id}`}
             wall={w}
-            layerEdges={layerEdgesMap[w.id]}
+            slabCorners={slabCorners}
           />
         ))}
 
@@ -3912,6 +3877,18 @@ export default function WallLayoutScene() {
     }),
     [parametricLayout],
   );
+
+  // Slab corners — extend framing outer corners outward by vindskydd + insulation
+  // so the slab covers those layers. Spikläkt and panel hang outside the slab.
+  const slabCorners = useMemo(() => {
+    const slabOffset = outsideDrywall + outsideInsulation;
+    if (slabOffset <= 0) return parametricLayout.framingOuterCorners;
+    // computeInnerCorners with negative thickness pushes corners outward
+    return computeInnerCorners(
+      parametricLayout.framingOuterCorners,
+      -slabOffset,
+    );
+  }, [parametricLayout.framingOuterCorners, outsideDrywall, outsideInsulation]);
 
   // Shell layout — building outer boundary for floor slab and non-framing view
   const shellLayout = useMemo(() => {
@@ -4543,6 +4520,7 @@ export default function WallLayoutScene() {
             osbLayout={osbLayout}
             drywallLayout={drywallLayout}
             shellLayout={shellLayout}
+            slabCorners={slabCorners}
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
             outsideDrywall={outsideDrywall}
