@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, ThreeEvent } from "@react-three/fiber";
 import {
   OrbitControls,
@@ -993,23 +993,23 @@ function WallInsulationSheets({
     const wallHeightMm = wallHeight;
     const edge = layerEdges.outsideInsulation;
     const { coverageStart, coverageEnd, centerZ: zCenter, depthM } = edge;
+
+    // Align insulation sheet joints to the stud grid so joints land on
+    // stud centers.  The first sheet is cut shorter if coverageStart
+    // doesn't fall on a grid line.
     const studWidth = wall.studLayout.studs[0]?.width ?? 45;
-    const studHalfWidth = studWidth / 2;
     const studSpacing = wall.studLayout.targetSpacing;
     const firstStudGrid =
       Math.ceil(
-        (wall.startCorner.retraction + studHalfWidth + 0.001) / studSpacing,
+        (wall.startCorner.retraction + studWidth / 2 + 0.001) / studSpacing,
       ) * studSpacing;
     const studGridOrigin = firstStudGrid - wall.startCorner.retraction;
-    const sheetGridOrigin =
-      wall.startCorner.joint === "butt" &&
-      wall.startCorner.interiorAngle <= Math.PI
-        ? studGridOrigin
-        : studGridOrigin - studSpacing;
-    const firstSheetStart =
-      Math.floor((coverageStart - sheetGridOrigin) / INSULATION_SHEET_WIDTH) *
+
+    // Find the first grid-aligned sheet edge at or before coverageStart
+    const gridAlignedStart =
+      Math.floor((coverageStart - studGridOrigin) / INSULATION_SHEET_WIDTH) *
         INSULATION_SHEET_WIDTH +
-      sheetGridOrigin;
+      studGridOrigin;
 
     let yStart = 0;
     let rowIndex = 0;
@@ -1021,7 +1021,7 @@ function WallInsulationSheets({
       let sheetIndex = 0;
 
       while (true) {
-        const rawStart = firstSheetStart + sheetIndex * INSULATION_SHEET_WIDTH;
+        const rawStart = gridAlignedStart + sheetIndex * INSULATION_SHEET_WIDTH;
         const rawEnd = rawStart + INSULATION_SHEET_WIDTH;
 
         if (rawStart >= coverageEnd - 0.001) break;
@@ -1138,6 +1138,20 @@ function WallCavityInsulation({
     const zCenter = 0;
     const verticalPlateZoneStart = wallHeight - plateH - verticalPlateH;
 
+    // Expand openings to include trimmers, header, and sill so insulation
+    // doesn't overlap framing members around the opening
+    const expandedOpenings: WallOpening[] = openings.map((o) => {
+      const expandedBottom = Math.max(o.bottom - studWidth, 0);
+      const expandedTop = o.bottom + o.height + studWidth;
+      return {
+        ...o,
+        left: o.left - studWidth,
+        bottom: expandedBottom,
+        width: o.width + studWidth * 2,
+        height: expandedTop - expandedBottom,
+      };
+    });
+
     for (let i = 0; i < studs.length - 1; i++) {
       const leftStud = studs[i];
       const rightStud = studs[i + 1];
@@ -1170,13 +1184,13 @@ function WallCavityInsulation({
           const panelStart = bayStart + panelIndex * panelWidth;
           const xCenter = panelStart + panelWidth / 2;
 
-          // Skip panels that overlap an opening
+          // Skip panels that overlap an opening (expanded to include framing)
           const pieces = subtractOpeningsFromRect(
             panelStart,
             rowStart,
             panelWidth,
             panelHeight,
-            openings,
+            expandedOpenings,
           );
           if (
             pieces.length === 1 &&
@@ -1357,22 +1371,133 @@ function WallInstallationLayer({
     }
     studRowCenters.push(wallHeight - studWidth / 2);
 
+    // Map framing-wall openings into installation-wall coordinates
+    const mappedOpenings = mapOpeningsToWall(openings, framingWall, wall);
+
+    // Expand openings to include vertical trimmers and horizontal header/sill
+    // so horizontal studs are cut around the entire opening frame
+    const expandedOpenings: WallOpening[] = mappedOpenings.map((o) => {
+      const expandedBottom = Math.max(o.bottom - studWidth, 0);
+      const expandedTop = o.bottom + o.height + studWidth;
+      return {
+        ...o,
+        left: o.left - studWidth,
+        bottom: expandedBottom,
+        width: o.width + studWidth * 2,
+        height: expandedTop - expandedBottom,
+      };
+    });
+
+    // Horizontal studs — split around openings (including trimmer zones)
     for (let rowIndex = 0; rowIndex < studRowCenters.length; rowIndex++) {
       const rowCenter = studRowCenters[rowIndex];
+      const rowTop = rowCenter + studWidth / 2;
+      const rowBottom = rowCenter - studWidth / 2;
 
       for (let i = 0; i < segmentBreaks.length - 1; i++) {
         const segmentStart = segmentBreaks[i];
         const segmentEnd = segmentBreaks[i + 1];
-        const segmentWidth = Math.max(segmentEnd - segmentStart, 0.001);
-        const segmentCenter = segmentStart + segmentWidth / 2;
 
+        // Split this stud segment around expanded openings
+        const spans = splitHorizontalSpan(
+          segmentStart,
+          segmentEnd,
+          rowBottom,
+          studWidth,
+          expandedOpenings,
+        );
+        for (let si = 0; si < spans.length; si++) {
+          const span = spans[si];
+          const spanWidth = Math.max(span.end - span.start, 0.001);
+          const spanCenter = span.start + spanWidth / 2;
+          result.push({
+            key: `install-stud-${rowIndex}-${i}-${si}`,
+            pos: [spanCenter * MM, rowCenter * MM, layerCenterZ],
+            size: [spanWidth * MM, studWidthM, studDepthM],
+          });
+        }
+      }
+    }
+
+    // Opening framing: vertical trimmers and horizontal header/sill
+    for (let oi = 0; oi < mappedOpenings.length; oi++) {
+      const o = mappedOpenings[oi];
+      const oLeft = o.left;
+      const oRight = o.left + o.width;
+      const oBottom = o.bottom;
+      const oTop = o.bottom + o.height;
+
+      // Vertical trimmer at left edge
+      const leftTrimmerX = oLeft - studWidth / 2;
+      if (leftTrimmerX >= -0.1 && leftTrimmerX <= coverageEnd + 0.1) {
+        // Find which stud rows the opening spans
+        const trimmerBottom = oBottom;
+        const trimmerTop = oTop;
+        const trimmerHeight = trimmerTop - trimmerBottom;
+        if (trimmerHeight > 1) {
+          result.push({
+            key: `install-trimmer-left-${oi}`,
+            pos: [
+              leftTrimmerX * MM,
+              ((trimmerBottom + trimmerTop) / 2) * MM,
+              layerCenterZ,
+            ],
+            size: [studWidthM, trimmerHeight * MM, studDepthM],
+          });
+        }
+      }
+
+      // Vertical trimmer at right edge
+      const rightTrimmerX = oRight + studWidth / 2;
+      if (rightTrimmerX >= -0.1 && rightTrimmerX <= coverageEnd + 0.1) {
+        const trimmerBottom = oBottom;
+        const trimmerTop = oTop;
+        const trimmerHeight = trimmerTop - trimmerBottom;
+        if (trimmerHeight > 1) {
+          result.push({
+            key: `install-trimmer-right-${oi}`,
+            pos: [
+              rightTrimmerX * MM,
+              ((trimmerBottom + trimmerTop) / 2) * MM,
+              layerCenterZ,
+            ],
+            size: [studWidthM, trimmerHeight * MM, studDepthM],
+          });
+        }
+      }
+
+      // Horizontal header above opening — extends over the trimmers
+      const headerY = oTop + studWidth / 2;
+      if (headerY <= wallHeight - 0.1) {
+        const headerLeft = oLeft - studWidth;
+        const headerRight = oRight + studWidth;
+        const headerSpan = headerRight - headerLeft;
         result.push({
-          key: `install-stud-${rowIndex}-${i}`,
-          pos: [segmentCenter * MM, rowCenter * MM, layerCenterZ],
-          size: [segmentWidth * MM, studWidthM, studDepthM],
+          key: `install-header-${oi}`,
+          pos: [
+            ((headerLeft + headerRight) / 2) * MM,
+            headerY * MM,
+            layerCenterZ,
+          ],
+          size: [headerSpan * MM, studWidthM, studDepthM],
+        });
+      }
+
+      // Horizontal sill below opening — extends over the trimmers
+      if (oBottom > studWidth + 1) {
+        const sillY = oBottom - studWidth / 2;
+        const sillLeft = oLeft - studWidth;
+        const sillRight = oRight + studWidth;
+        const sillSpan = sillRight - sillLeft;
+        result.push({
+          key: `install-sill-${oi}`,
+          pos: [((sillLeft + sillRight) / 2) * MM, sillY * MM, layerCenterZ],
+          size: [sillSpan * MM, studWidthM, studDepthM],
         });
       }
     }
+
+    // Insulation panels between stud rows — split around openings
 
     for (let rowIndex = 0; rowIndex < studRowCenters.length - 1; rowIndex++) {
       const lowerStudCenter = studRowCenters[rowIndex];
@@ -1393,14 +1518,14 @@ function WallInstallationLayer({
           coverageEnd - xStart,
         );
 
-        // Skip insulation panels that overlap an opening
-        const mappedOpenings = mapOpeningsToWall(openings, framingWall, wall);
+        // Skip insulation panels that overlap an opening (use expandedOpenings
+        // so insulation is also cut around trimmers, headers, and sills)
         const pieces = subtractOpeningsFromRect(
           xStart,
           bayBottom,
           panelWidth,
           bayHeight,
-          mappedOpenings,
+          expandedOpenings,
         );
         for (let pi = 0; pi < pieces.length; pi++) {
           const p = pieces[pi];
@@ -1638,17 +1763,20 @@ function WallSpiklakt({
   wallHeight,
   layerEdges,
   openings,
+  zOverride,
 }: {
   wall: Wall;
   wallHeight: number;
   layerEdges: WallLayerEdges;
   openings: WallOpening[];
+  zOverride?: number;
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
   const battens = useMemo(() => {
     const edge = layerEdges.spiklakt;
-    const { coverageStart, coverageEnd, centerZ: zPos } = edge;
+    const { coverageStart, coverageEnd } = edge;
+    const zPos = zOverride ?? edge.centerZ;
     const thickness = SPIKLAKT_THICKNESS * MM;
     const height = SPIKLAKT_HEIGHT * MM;
     const heightMm = SPIKLAKT_HEIGHT;
@@ -1703,7 +1831,7 @@ function WallSpiklakt({
         texture: cloneTextureWithLengthwiseOffset(pineTexture, row.key, "x"),
       })),
     };
-  }, [layerEdges, pineTexture, wall, wallHeight, openings]);
+  }, [layerEdges, pineTexture, wall, wallHeight, openings, zOverride]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1744,17 +1872,20 @@ function WallVerticalSpiklakt({
   wallHeight,
   layerEdges,
   openings,
+  zOverride,
 }: {
   wall: Wall;
   wallHeight: number;
   layerEdges: WallLayerEdges;
   openings: WallOpening[];
+  zOverride?: number;
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
   const battens = useMemo(() => {
     const edge = layerEdges.spiklakt;
-    const { coverageStart, coverageEnd, centerZ: zPos } = edge;
+    const { coverageStart, coverageEnd } = edge;
+    const zPos = zOverride ?? edge.centerZ;
     const thickness = SPIKLAKT_THICKNESS * MM;
     const widthM = SPIKLAKT_HEIGHT * MM;
     const widthMm = SPIKLAKT_HEIGHT;
@@ -1805,7 +1936,7 @@ function WallVerticalSpiklakt({
         texture: cloneTextureWithLengthwiseOffset(pineTexture, column.key, "y"),
       })),
     };
-  }, [layerEdges, pineTexture, wall, wallHeight, openings]);
+  }, [layerEdges, pineTexture, wall, wallHeight, openings, zOverride]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1874,7 +2005,8 @@ function WallStandingExteriorPanel({
     const boards: {
       key: string;
       pos: [number, number, number];
-      geometry: THREE.ExtrudeGeometry;
+      geometry?: THREE.ExtrudeGeometry;
+      size?: [number, number, number];
       color: string;
       roughness: number;
       texture: THREE.Texture;
@@ -1896,15 +2028,6 @@ function WallStandingExteriorPanel({
         0.001,
       );
 
-      // Check if this board overlaps any opening
-      const boardLeftMm = coverageStart + boardStart / MM;
-      const boardRightMm = boardLeftMm + actualBoardWidth / MM;
-      const boardOverlapsOpening = openings.some((o) => {
-        const oLeft = o.left;
-        const oRight = o.left + o.width;
-        return boardRightMm > oLeft + 0.1 && boardLeftMm < oRight - 0.1;
-      });
-
       const isFirst = index === 0;
       const isLast = boardStart + boardWidth >= totalLength - 0.001;
       const leftLapWidth = isFirst
@@ -1918,49 +2041,104 @@ function WallStandingExteriorPanel({
         0,
       );
       if (
-        !boardOverlapsOpening &&
         actualBoardWidth > 0 &&
         (centerWidth > 0 || leftLapWidth > 0 || rightLapWidth > 0)
       ) {
-        const boardSeed = `panel-${wall.id}-${index}`;
-        boards.push({
-          key: `panel-${index}`,
-          pos: [boardStart, 0, panelBackZ],
-          color: getSubtleWoodColor(boardSeed),
-          roughness: getSubtleWoodRoughness(boardSeed),
-          geometry: createYtterpanelBoardGeometry({
-            boardWidth: actualBoardWidth,
-            wallHeight: wallHeightM,
-            thickness: panelThickness,
-            leftLapWidth,
-            rightLapWidth,
-            rabbetDepth,
-            falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
-            faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
-          }),
-          texture: cloneTextureWithLengthwiseOffset(
-            pineTexture,
-            boardSeed,
-            "y",
-          ),
-          paintColor: getSubtlePaintColor(boardSeed),
-          paintOpacity: getSubtlePaintOpacity(boardSeed),
-        });
+        // 2D-subtract openings from this board's rectangle
+        const boardLeftMm = coverageStart + boardStart / MM;
+        const boardWidthMm = actualBoardWidth / MM;
+        const pieces = subtractOpeningsFromRect(
+          boardLeftMm,
+          0,
+          boardWidthMm,
+          wallHeight,
+          openings,
+        );
+
+        for (let pi = 0; pi < pieces.length; pi++) {
+          const piece = pieces[pi];
+          const pieceWidthMm = piece.w;
+          const pieceHeightMm = piece.h;
+          const pieceHeight = pieceHeightMm * MM;
+          const pieceY = piece.y * MM;
+          const pieceXOffset = (piece.x - boardLeftMm) * MM;
+          const boardSeed = `panel-${wall.id}-${index}-${pi}`;
+
+          // Full-width piece → use profiled spårpanel geometry
+          if (Math.abs(pieceWidthMm - boardWidthMm) < 1) {
+            boards.push({
+              key: `panel-${index}-${pi}`,
+              pos: [boardStart, pieceY, panelBackZ],
+              color: getSubtleWoodColor(boardSeed),
+              roughness: getSubtleWoodRoughness(boardSeed),
+              geometry: createYtterpanelBoardGeometry({
+                boardWidth: actualBoardWidth,
+                wallHeight: pieceHeight,
+                thickness: panelThickness,
+                leftLapWidth,
+                rightLapWidth,
+                rabbetDepth,
+                falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
+                faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
+              }),
+              texture: cloneTextureWithLengthwiseOffset(
+                pineTexture,
+                boardSeed,
+                "y",
+              ),
+              paintColor: getSubtlePaintColor(boardSeed),
+              paintOpacity: getSubtlePaintOpacity(boardSeed),
+            });
+          } else {
+            // Partial-width fill piece beside opening → flat panel
+            boards.push({
+              key: `panel-${index}-${pi}`,
+              pos: [
+                boardStart + pieceXOffset + (pieceWidthMm * MM) / 2,
+                pieceY + pieceHeight / 2,
+                panelBackZ - panelThickness / 2,
+              ],
+              size: [pieceWidthMm * MM, pieceHeight, panelThickness],
+              color: getSubtleWoodColor(boardSeed),
+              roughness: getSubtleWoodRoughness(boardSeed),
+              texture: cloneTextureWithLengthwiseOffset(
+                pineTexture,
+                boardSeed,
+                "y",
+              ),
+              paintColor: getSubtlePaintColor(boardSeed),
+              paintOpacity: getSubtlePaintOpacity(boardSeed),
+            });
+          }
+        }
 
         if (!isFirst) {
-          seamShadows.push({
-            key: `panel-seam-${index}`,
-            pos: [
-              boardStart + leftLapWidth,
-              wallHeightM / 2,
-              panelBackZ - panelThickness + seamShadowDepth / 2,
-            ],
-            size: [
-              Math.min(seamShadowWidth, leftLapWidth),
-              wallHeightM,
-              seamShadowDepth,
-            ],
-          });
+          // Seam shadows also split around openings
+          const seamPieces = splitVerticalSpan(
+            0,
+            wallHeight,
+            boardLeftMm,
+            Math.min(seamShadowWidth, leftLapWidth) / MM,
+            openings,
+          );
+          for (let si = 0; si < seamPieces.length; si++) {
+            const sp = seamPieces[si];
+            const spH = (sp.end - sp.start) * MM;
+            const spY = ((sp.start + sp.end) / 2) * MM;
+            seamShadows.push({
+              key: `panel-seam-${index}-${si}`,
+              pos: [
+                boardStart + leftLapWidth,
+                spY,
+                panelBackZ - panelThickness + seamShadowDepth / 2,
+              ],
+              size: [
+                Math.min(seamShadowWidth, leftLapWidth),
+                spH,
+                seamShadowDepth,
+              ],
+            });
+          }
         }
       }
 
@@ -2010,6 +2188,7 @@ function WallStandingExteriorPanel({
               renderOrder={2}
               geometry={part.geometry}
             >
+              {part.size && <boxGeometry args={part.size} />}
               <meshStandardMaterial
                 map={part.texture}
                 color={showPrimedWhite ? PRIMED_PANEL_BASE_COLOR : part.color}
@@ -2019,6 +2198,7 @@ function WallStandingExteriorPanel({
             </mesh>
             {showPrimedWhite && (
               <mesh receiveShadow renderOrder={3} geometry={part.geometry}>
+                {part.size && <boxGeometry args={part.size} />}
                 <meshStandardMaterial
                   color={part.paintColor}
                   roughness={0.97}
@@ -2095,16 +2275,6 @@ function WallHorizontalExteriorPanel({
         0.001,
       );
 
-      // Check if this board row overlaps any opening
-      const boardBottomMm = boardStart / MM;
-      const boardTopMm = boardBottomMm + actualBoardHeight / MM;
-      const boardOverlapsOpening = openings.some((o) => {
-        return (
-          boardTopMm > o.bottom + 0.1 &&
-          boardBottomMm < o.bottom + o.height - 0.1
-        );
-      });
-
       const isFirst = index === 0;
       const isLast = boardStart + boardHeight >= wallHeightM - 0.001;
       const lowerLapWidth = isFirst
@@ -2119,49 +2289,76 @@ function WallHorizontalExteriorPanel({
       );
 
       if (
-        !boardOverlapsOpening &&
         actualBoardHeight > 0 &&
         (centerWidth > 0 || lowerLapWidth > 0 || upperFalseWidth > 0)
       ) {
-        const boardSeed = `horizontal-panel-${wall.id}-${index}`;
-        boards.push({
-          key: `horizontal-panel-${index}`,
-          pos: [0, boardStart, panelBackZ],
-          color: getSubtleWoodColor(boardSeed),
-          roughness: getSubtleWoodRoughness(boardSeed),
-          geometry: createLiggandeYtterpanelBoardGeometry({
-            boardHeight: actualBoardHeight,
-            wallLength: totalLength,
-            thickness: panelThickness,
-            leftLapWidth: lowerLapWidth,
-            rightLapWidth: upperFalseWidth,
-            rabbetDepth,
-            falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
-            faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
-          }),
-          texture: cloneTextureWithLengthwiseOffset(
-            pineTexture,
-            boardSeed,
-            "x",
-          ),
-          paintColor: getSubtlePaintColor(boardSeed),
-          paintOpacity: getSubtlePaintOpacity(boardSeed),
-        });
+        // Split this board row horizontally around openings
+        const boardBottomMm = boardStart / MM;
+        const pieces = splitHorizontalSpan(
+          coverageStart,
+          coverageEnd,
+          boardBottomMm,
+          actualBoardHeight / MM,
+          openings,
+        );
+
+        for (let pi = 0; pi < pieces.length; pi++) {
+          const piece = pieces[pi];
+          const pieceLen = (piece.end - piece.start) * MM;
+          const pieceX = (piece.start - coverageStart) * MM;
+          const boardSeed = `horizontal-panel-${wall.id}-${index}-${pi}`;
+          boards.push({
+            key: `horizontal-panel-${index}-${pi}`,
+            pos: [pieceX, boardStart, panelBackZ],
+            color: getSubtleWoodColor(boardSeed),
+            roughness: getSubtleWoodRoughness(boardSeed),
+            geometry: createLiggandeYtterpanelBoardGeometry({
+              boardHeight: actualBoardHeight,
+              wallLength: pieceLen,
+              thickness: panelThickness,
+              leftLapWidth: lowerLapWidth,
+              rightLapWidth: upperFalseWidth,
+              rabbetDepth,
+              falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
+              faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
+            }),
+            texture: cloneTextureWithLengthwiseOffset(
+              pineTexture,
+              boardSeed,
+              "x",
+            ),
+            paintColor: getSubtlePaintColor(boardSeed),
+            paintOpacity: getSubtlePaintOpacity(boardSeed),
+          });
+        }
 
         if (!isFirst) {
-          seamShadows.push({
-            key: `horizontal-panel-seam-${index}`,
-            pos: [
-              totalLength / 2,
-              boardStart + lowerLapWidth,
-              panelBackZ - panelThickness + seamShadowDepth / 2,
-            ],
-            size: [
-              totalLength,
-              Math.min(seamShadowWidth, lowerLapWidth),
-              seamShadowDepth,
-            ],
-          });
+          // Seam shadows also split around openings
+          const seamPieces = splitHorizontalSpan(
+            coverageStart,
+            coverageEnd,
+            boardBottomMm,
+            Math.min(seamShadowWidth, lowerLapWidth) / MM,
+            openings,
+          );
+          for (let si = 0; si < seamPieces.length; si++) {
+            const sp = seamPieces[si];
+            const spLen = (sp.end - sp.start) * MM;
+            const spX = ((sp.start + sp.end) / 2 - coverageStart) * MM;
+            seamShadows.push({
+              key: `horizontal-panel-seam-${index}-${si}`,
+              pos: [
+                spX,
+                boardStart + lowerLapWidth,
+                panelBackZ - panelThickness + seamShadowDepth / 2,
+              ],
+              size: [
+                spLen,
+                Math.min(seamShadowWidth, lowerLapWidth),
+                seamShadowDepth,
+              ],
+            });
+          }
         }
       }
 
@@ -3384,15 +3581,33 @@ function WallLayoutModel({
         ))}
 
       {showStandingExteriorPanel &&
-        framingLayout.walls.map((w) => (
-          <WallSpiklakt
-            key={`spiklakt-${w.id}`}
-            wall={w}
-            wallHeight={wallHeight}
-            layerEdges={layerEdgesMap[w.id]}
-            openings={wallOpenings[w.id] || []}
-          />
-        ))}
+        framingLayout.walls.map((w) => {
+          const edge = layerEdgesMap[w.id].spiklakt;
+          // Double läkt: vertical (inner) + horizontal (outer)
+          // Exterior Z goes negative outward, so inner half center is innerFaceZ minus half a batten
+          const innerZ = edge.innerFaceZ - (SPIKLAKT_THICKNESS * MM) / 2;
+          const outerZ = edge.outerFaceZ + (SPIKLAKT_THICKNESS * MM) / 2;
+          return (
+            <React.Fragment key={`spiklakt-double-${w.id}`}>
+              <WallVerticalSpiklakt
+                key={`spiklakt-vertical-${w.id}`}
+                wall={w}
+                wallHeight={wallHeight}
+                layerEdges={layerEdgesMap[w.id]}
+                openings={wallOpenings[w.id] || []}
+                zOverride={innerZ}
+              />
+              <WallSpiklakt
+                key={`spiklakt-horizontal-${w.id}`}
+                wall={w}
+                wallHeight={wallHeight}
+                layerEdges={layerEdgesMap[w.id]}
+                openings={wallOpenings[w.id] || []}
+                zOverride={outerZ}
+              />
+            </React.Fragment>
+          );
+        })}
 
       {showHorizontalExteriorPanel &&
         framingLayout.walls.map((w) => (
@@ -3458,26 +3673,34 @@ function WallLayoutModel({
       {showFraming &&
         showOsb &&
         osbLayout &&
-        osbLayout.walls.map((w, index) => (
-          <WallOsbBoards
-            key={`osb-${w.id}`}
-            wall={w}
-            wallHeight={wallHeight}
-            openings={wallOpenings[framingLayout.walls[index]?.id] || []}
-          />
-        ))}
+        osbLayout.walls.map((w, index) => {
+          const fw = framingLayout.walls[index];
+          const raw = fw ? wallOpenings[fw.id] || [] : [];
+          return (
+            <WallOsbBoards
+              key={`osb-${w.id}`}
+              wall={w}
+              wallHeight={wallHeight}
+              openings={fw ? mapOpeningsToWall(raw, fw, w) : raw}
+            />
+          );
+        })}
 
       {showFraming &&
         showDrywall &&
         drywallLayout &&
-        drywallLayout.walls.map((w, index) => (
-          <WallDrywallBoards
-            key={`drywall-${w.id}`}
-            wall={w}
-            wallHeight={wallHeight}
-            openings={wallOpenings[framingLayout.walls[index]?.id] || []}
-          />
-        ))}
+        drywallLayout.walls.map((w, index) => {
+          const fw = framingLayout.walls[index];
+          const raw = fw ? wallOpenings[fw.id] || [] : [];
+          return (
+            <WallDrywallBoards
+              key={`drywall-${w.id}`}
+              wall={w}
+              wallHeight={wallHeight}
+              openings={fw ? mapOpeningsToWall(raw, fw, w) : raw}
+            />
+          );
+        })}
 
       {showOutsideDrywall &&
         showFraming &&
@@ -3649,10 +3872,14 @@ export default function WallLayoutScene() {
         order: extOrder++,
       });
     }
+    // Standing panels need double läkt: vertical (inner) + horizontal (outer)
+    const spiklaktThickness = showStandingExteriorPanel
+      ? SPIKLAKT_THICKNESS * 2
+      : SPIKLAKT_THICKNESS;
     defs.push({
       id: "spiklakt",
       name: "Spikläkt",
-      thickness: SPIKLAKT_THICKNESS,
+      thickness: spiklaktThickness,
       side: "exterior",
       order: extOrder++,
     });
@@ -3664,7 +3891,7 @@ export default function WallLayoutScene() {
       order: extOrder++,
     });
     return defs;
-  }, [thickness, outsideDrywall, outsideInsulation]);
+  }, [thickness, outsideDrywall, outsideInsulation, showStandingExteriorPanel]);
 
   // Parametric layout: framing + all exterior layers resolved in one pass
   const parametricLayout = useMemo(() => {
