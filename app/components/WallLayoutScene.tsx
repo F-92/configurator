@@ -24,6 +24,12 @@ import {
   splitVerticalSpan,
 } from "../lib/wallLayout/openings";
 import { getOsbTexture, getPineTexture } from "../lib/woodTexture";
+import { buildParametricLayout } from "../lib/wallLayout/parametric";
+import type {
+  ParametricWall,
+  LayerDef,
+  ResolvedLayer,
+} from "../lib/wallLayout/parametric";
 
 // ---- Constants ----
 const MM = 0.001; // mm → meters for Three.js
@@ -49,6 +55,7 @@ const DRYWALL_BOARD_THICKNESS = 13; // mm
 const INSULATION_SHEET_WIDTH = 1200; // mm
 const INSULATION_SHEET_HEIGHT = 2700; // mm
 const CAVITY_INSULATION_SHEET_HEIGHT = 1170; // mm
+const OUTSIDE_DRYWALL_THICKNESS = 9; // mm vindskyddsskiva
 const HOUSE_WRAP_THICKNESS = 2; // mm visual membrane thickness
 const FACADE_AIR_GAP = 25; // mm ventilated cavity behind cladding
 const SPIKLAKT_THICKNESS = 25; // mm horizontal battens creating the air gap
@@ -111,6 +118,105 @@ function createNotchedStudGeometry(
   return geometry;
 }
 
+// ---- Layer Edge Compatibility ----
+// The parametric system computes all layer data.  These types provide
+// backward-compatible access so existing rendering components don't
+// need to change their internal data access patterns.
+
+interface LayerEdge {
+  coverageStart: number;
+  coverageEnd: number;
+  outerFaceZ: number;
+  innerFaceZ: number;
+  centerZ: number;
+  depthM: number;
+}
+
+interface WallLayerEdges {
+  framing: LayerEdge;
+  outsideDrywall: LayerEdge;
+  outsideInsulation: LayerEdge;
+  weatherSurface: LayerEdge;
+  spiklakt: LayerEdge;
+  panel: LayerEdge;
+}
+
+/**
+ * Minimal interface matching the `WallLayout` class shape.
+ * Components only use `.walls`, `.outerCorners`, `.innerCorners`.
+ */
+interface LayoutLike {
+  walls: Wall[];
+  outerCorners: { x: number; y: number }[];
+  innerCorners: { x: number; y: number }[];
+}
+
+function resolvedLayerToEdge(layer: ResolvedLayer): LayerEdge {
+  return {
+    coverageStart: layer.coverageStart,
+    coverageEnd: layer.coverageEnd,
+    outerFaceZ: layer.outerFaceZ,
+    innerFaceZ: layer.innerFaceZ,
+    centerZ: layer.centerZ,
+    depthM: layer.depthM,
+  };
+}
+
+function wallLayerEdgesFromParametric(wall: ParametricWall): WallLayerEdges {
+  const get = (id: string): LayerEdge => {
+    const layer = wall.layers[id];
+    if (layer) return resolvedLayerToEdge(layer);
+    // Fallback: zero-size edge at framing outer face
+    const framingLayer = wall.layers["framing"];
+    return {
+      coverageStart: framingLayer?.coverageStart ?? 0,
+      coverageEnd: framingLayer?.coverageEnd ?? 0,
+      outerFaceZ: framingLayer?.outerFaceZ ?? 0,
+      innerFaceZ: framingLayer?.outerFaceZ ?? 0,
+      centerZ: framingLayer?.outerFaceZ ?? 0,
+      depthM: 0,
+    };
+  };
+
+  // weatherSurface is a virtual combined layer spanning outsideDrywall + outsideInsulation
+  const drywall = get("outsideDrywall");
+  const insulation = get("outsideInsulation");
+  const hasWeather = drywall.depthM > 0 || insulation.depthM > 0;
+  const weatherSurface: LayerEdge = hasWeather
+    ? {
+        coverageStart: Math.min(
+          drywall.coverageStart,
+          insulation.coverageStart,
+        ),
+        coverageEnd: Math.max(drywall.coverageEnd, insulation.coverageEnd),
+        outerFaceZ: Math.min(drywall.outerFaceZ, insulation.outerFaceZ),
+        innerFaceZ: Math.max(drywall.innerFaceZ, insulation.innerFaceZ),
+        centerZ:
+          (Math.min(drywall.outerFaceZ, insulation.outerFaceZ) +
+            Math.max(drywall.innerFaceZ, insulation.innerFaceZ)) /
+          2,
+        depthM: Math.abs(
+          Math.min(drywall.outerFaceZ, insulation.outerFaceZ) -
+            Math.max(drywall.innerFaceZ, insulation.innerFaceZ),
+        ),
+      }
+    : drywall;
+
+  return {
+    framing: get("framing"),
+    outsideDrywall: drywall,
+    outsideInsulation: insulation,
+    weatherSurface,
+    spiklakt: get("spiklakt"),
+    panel: get("panel"),
+  };
+}
+
+/**
+ * Compute horizontal coverage range for an exterior layer at the given
+ * thickness.  Uses the wall's corner-joint data so components that don't
+ * receive pre-computed layer edges can still determine their own coverage.
+ */
 function getExteriorCoverageRange(wall: Wall, layerThicknessMm: number) {
   const startOuterCornerOffset = -wall.startCorner.retraction;
   const startConvexExtension =
@@ -622,11 +728,38 @@ function WallFraming({
     // Opening framing members (trimmers, headers, sills, cripples)
     for (const framing of openingFramings) {
       for (const member of framing.members) {
-        result.push({
-          key: `of-${framing.opening.id}-${member.type}-${Math.round(member.centerX)}`,
-          pos: [member.centerX * MM, member.centerY * MM, 0],
-          size: [member.width * MM, member.height * MM, member.depth * MM],
-        });
+        const k = `of-${framing.opening.id}-${member.type}-${Math.round(member.centerX)}`;
+        const wM = member.width * MM;
+        const hM = member.height * MM;
+        const dM = member.depth * MM;
+
+        // Trimmers and cripple-above studs touch the top plate and need
+        // the notch when stående hammarband is active.
+        const needsNotch =
+          verticalPlateH > 0 &&
+          notchedStudGeometry &&
+          (member.type === "trimmer" || member.type === "cripple-above");
+
+        if (needsNotch) {
+          const geo = createNotchedStudGeometry(
+            wM,
+            hM,
+            dM,
+            verticalPlateH,
+            verticalPlateD,
+          );
+          result.push({
+            key: k,
+            pos: [member.centerX * MM, member.centerY * MM, 0],
+            geometry: geo,
+          });
+        } else {
+          result.push({
+            key: k,
+            pos: [member.centerX * MM, member.centerY * MM, 0],
+            size: [wM, hM, dM],
+          });
+        }
       }
     }
 
@@ -738,16 +871,113 @@ function WallSurface({
   );
 }
 
+/** Outside drywall (vindskyddsskiva) – sits flush against the exterior face of the framing */
+function WallOutsideDrywall({
+  wall,
+  wallHeight,
+  layerEdges,
+  openings,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  layerEdges: WallLayerEdges;
+  openings: WallOpening[];
+}) {
+  const boards = useMemo(() => {
+    const result: {
+      key: string;
+      pos: [number, number, number];
+      size: [number, number, number];
+      color: string;
+    }[] = [];
+
+    const edge = layerEdges.outsideDrywall;
+    const { coverageStart, coverageEnd, centerZ, depthM } = edge;
+
+    let yStart = 0;
+    let rowIndex = 0;
+    while (yStart < wallHeight - 0.001) {
+      const boardHeight = Math.min(DRYWALL_BOARD_HEIGHT, wallHeight - yStart);
+      let xStart = coverageStart;
+      let colIndex = 0;
+
+      while (xStart < coverageEnd - 0.001) {
+        const boardWidth = Math.min(DRYWALL_BOARD_WIDTH, coverageEnd - xStart);
+
+        const pieces = subtractOpeningsFromRect(
+          xStart,
+          yStart,
+          boardWidth,
+          boardHeight,
+          openings,
+        );
+        for (let pi = 0; pi < pieces.length; pi++) {
+          const p = pieces[pi];
+          result.push({
+            key: `outside-drywall-${rowIndex}-${colIndex}-${pi}`,
+            pos: [(p.x + p.w / 2) * MM, (p.y + p.h / 2) * MM, centerZ],
+            size: [p.w * MM, p.h * MM, depthM],
+            color: (rowIndex + colIndex + pi) % 2 === 0 ? "#e8e4da" : "#ddd8cd",
+          });
+        }
+
+        xStart += DRYWALL_BOARD_WIDTH;
+        colIndex += 1;
+      }
+
+      yStart += DRYWALL_BOARD_HEIGHT;
+      rowIndex += 1;
+    }
+
+    return result;
+  }, [layerEdges, wallHeight, openings]);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  if (boards.length === 0) return null;
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {boards.map((board) => (
+        <group key={board.key} position={board.pos}>
+          <mesh castShadow receiveShadow>
+            <boxGeometry args={board.size} />
+            <meshStandardMaterial
+              color={board.color}
+              roughness={0.92}
+              metalness={0}
+            />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(...board.size)]} />
+            <lineBasicMaterial color="#b8b2a6" linewidth={1} />
+          </lineSegments>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 /** Exterior insulation rendered as ROCKWOOL-like sheets, projected outward from the framing wall */
 function WallInsulationSheets({
   wall,
   wallHeight,
   thickness,
+  layerEdges,
   openings,
 }: {
   wall: Wall;
   wallHeight: number;
   thickness: number;
+  layerEdges: WallLayerEdges;
   openings: WallOpening[];
 }) {
   const sheets = useMemo(() => {
@@ -761,13 +991,8 @@ function WallInsulationSheets({
     if (thickness <= 0) return result;
 
     const wallHeightMm = wallHeight;
-    const depthM = thickness * MM;
-    const wallThicknessM = wall.thickness * MM;
-    const zCenter = -(wallThicknessM / 2 + depthM / 2) - 0.001;
-    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
-      wall,
-      thickness,
-    );
+    const edge = layerEdges.outsideInsulation;
+    const { coverageStart, coverageEnd, centerZ: zCenter, depthM } = edge;
     const studWidth = wall.studLayout.studs[0]?.width ?? 45;
     const studHalfWidth = studWidth / 2;
     const studSpacing = wall.studLayout.targetSpacing;
@@ -836,7 +1061,7 @@ function WallInsulationSheets({
     }
 
     return result;
-  }, [openings, thickness, wall, wallHeight]);
+  }, [openings, layerEdges, thickness, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1317,30 +1542,21 @@ function WallHouseWrap({
 /** Bent metal comb profile at the base of the ventilated facade cavity */
 function WallMusband({
   wall,
-  outsideInsulation,
+  layerEdges,
 }: {
   wall: Wall;
-  outsideInsulation: number;
+  layerEdges: WallLayerEdges;
 }) {
   const strip = useMemo(() => {
-    const coverageLayer =
-      outsideInsulation > 0 ? outsideInsulation : HOUSE_WRAP_THICKNESS;
-    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
-      wall,
-      coverageLayer,
-    );
+    const edge = layerEdges.weatherSurface;
+    const { coverageStart, coverageEnd, outerFaceZ } = edge;
     const length = Math.max(coverageEnd - coverageStart, 0.001) * MM;
     const height = MUSBAND_HEIGHT * MM;
     const projection = MUSBAND_PROJECTION * MM;
     const thickness = MUSBAND_THICKNESS * MM;
-    const framingDepth = wall.thickness * MM;
-    const weatherLayerDepth =
-      outsideInsulation > 0
-        ? framingDepth / 2 + outsideInsulation * MM
-        : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
 
     return {
-      rootPos: [coverageStart * MM + length / 2, 0, -weatherLayerDepth] as [
+      rootPos: [coverageStart * MM + length / 2, 0, outerFaceZ] as [
         number,
         number,
         number,
@@ -1357,7 +1573,7 @@ function WallMusband({
         size: [tooth.width, thickness, projection] as [number, number, number],
       })),
     };
-  }, [outsideInsulation, wall]);
+  }, [layerEdges, wall]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1420,33 +1636,23 @@ function WallMusband({
 function WallSpiklakt({
   wall,
   wallHeight,
-  outsideInsulation,
+  layerEdges,
   openings,
 }: {
   wall: Wall;
   wallHeight: number;
-  outsideInsulation: number;
+  layerEdges: WallLayerEdges;
   openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
   const battens = useMemo(() => {
-    const coverageLayer =
-      outsideInsulation > 0 ? outsideInsulation : HOUSE_WRAP_THICKNESS;
-    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
-      wall,
-      coverageLayer,
-    );
+    const edge = layerEdges.spiklakt;
+    const { coverageStart, coverageEnd, centerZ: zPos } = edge;
     const thickness = SPIKLAKT_THICKNESS * MM;
     const height = SPIKLAKT_HEIGHT * MM;
     const heightMm = SPIKLAKT_HEIGHT;
     const wallHeightM = wallHeight * MM;
-    const framingDepth = wall.thickness * MM;
-    const weatherLayerDepth =
-      outsideInsulation > 0
-        ? framingDepth / 2 + outsideInsulation * MM
-        : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
-    const zPos = -(weatherLayerDepth + thickness / 2);
 
     const rows: {
       key: string;
@@ -1497,7 +1703,7 @@ function WallSpiklakt({
         texture: cloneTextureWithLengthwiseOffset(pineTexture, row.key, "x"),
       })),
     };
-  }, [outsideInsulation, pineTexture, wall, wallHeight, openings]);
+  }, [layerEdges, pineTexture, wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1536,33 +1742,22 @@ function WallSpiklakt({
 function WallVerticalSpiklakt({
   wall,
   wallHeight,
-  outsideInsulation,
+  layerEdges,
   openings,
 }: {
   wall: Wall;
   wallHeight: number;
-  outsideInsulation: number;
+  layerEdges: WallLayerEdges;
   openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
   const battens = useMemo(() => {
-    const coverageLayer =
-      outsideInsulation > 0 ? outsideInsulation : HOUSE_WRAP_THICKNESS;
-    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
-      wall,
-      coverageLayer,
-    );
-    const length = Math.max(coverageEnd - coverageStart, 0.001) * MM;
+    const edge = layerEdges.spiklakt;
+    const { coverageStart, coverageEnd, centerZ: zPos } = edge;
     const thickness = SPIKLAKT_THICKNESS * MM;
     const widthM = SPIKLAKT_HEIGHT * MM;
     const widthMm = SPIKLAKT_HEIGHT;
-    const framingDepth = wall.thickness * MM;
-    const weatherLayerDepth =
-      outsideInsulation > 0
-        ? framingDepth / 2 + outsideInsulation * MM
-        : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
-    const zPos = -(weatherLayerDepth + thickness / 2);
 
     const columns: {
       key: string;
@@ -1591,24 +1786,15 @@ function WallVerticalSpiklakt({
       }
     };
 
-    let centerX = coverageStart * MM + widthM / 2;
-    let columnIndex = 0;
-
-    while (centerX < coverageStart * MM + length - widthM / 2 - 0.001) {
-      addColumnAtX(centerX, columnIndex);
-      centerX += SPIKLAKT_SPACING * MM;
-      columnIndex += 1;
-    }
-
-    const endColumnX = Math.max(
-      coverageStart * MM + widthM / 2,
-      coverageStart * MM + length - widthM / 2,
-    );
-    if (
-      columnIndex === 0 ||
-      centerX - SPIKLAKT_SPACING * MM < endColumnX - 0.001
-    ) {
-      addColumnAtX(endColumnX, columnIndex);
+    // Place vertical battens at stud positions so they align with the framing
+    const retraction = wall.startCorner.retraction;
+    const studs = wall.studLayout.studs;
+    for (let i = 0; i < studs.length; i++) {
+      const studXMm = retraction + studs[i].centerPosition;
+      // Only place batten if the stud falls within the layer coverage
+      if (studXMm >= coverageStart && studXMm <= coverageEnd) {
+        addColumnAtX(studXMm * MM, i);
+      }
     }
 
     return {
@@ -1619,7 +1805,7 @@ function WallVerticalSpiklakt({
         texture: cloneTextureWithLengthwiseOffset(pineTexture, column.key, "y"),
       })),
     };
-  }, [outsideInsulation, pineTexture, wall, wallHeight, openings]);
+  }, [layerEdges, pineTexture, wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1658,25 +1844,21 @@ function WallVerticalSpiklakt({
 function WallStandingExteriorPanel({
   wall,
   wallHeight,
-  outsideInsulation,
+  layerEdges,
   showPrimedWhite,
   openings,
 }: {
   wall: Wall;
   wallHeight: number;
-  outsideInsulation: number;
+  layerEdges: WallLayerEdges;
   showPrimedWhite: boolean;
   openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
   const panelData = useMemo(() => {
-    const coverageLayer =
-      outsideInsulation > 0 ? outsideInsulation : HOUSE_WRAP_THICKNESS;
-    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
-      wall,
-      coverageLayer,
-    );
+    const edge = layerEdges.panel;
+    const { coverageStart, coverageEnd } = edge;
     const wallHeightM = wallHeight * MM;
     const panelThickness = YTTERPANEL_THICKNESS * MM;
     const boardWidth = YTTERPANEL_BOARD_WIDTH * MM;
@@ -1687,12 +1869,7 @@ function WallStandingExteriorPanel({
     const seamShadowWidth = YTTERPANEL_SEAM_SHADOW_WIDTH * MM;
     const seamShadowDepth = YTTERPANEL_SEAM_SHADOW_DEPTH * MM;
     const totalLength = Math.max(coverageEnd - coverageStart, 0.001) * MM;
-    const framingDepth = wall.thickness * MM;
-    const weatherLayerDepth =
-      outsideInsulation > 0
-        ? framingDepth / 2 + outsideInsulation * MM
-        : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
-    const panelBackZ = -(weatherLayerDepth + FACADE_AIR_GAP * MM);
+    const panelBackZ = edge.innerFaceZ;
 
     const boards: {
       key: string;
@@ -1796,7 +1973,7 @@ function WallStandingExteriorPanel({
       boards,
       seamShadows,
     };
-  }, [openings, outsideInsulation, pineTexture, wall, wallHeight]);
+  }, [openings, layerEdges, pineTexture, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1866,25 +2043,21 @@ function WallStandingExteriorPanel({
 function WallHorizontalExteriorPanel({
   wall,
   wallHeight,
-  outsideInsulation,
+  layerEdges,
   showPrimedWhite,
   openings,
 }: {
   wall: Wall;
   wallHeight: number;
-  outsideInsulation: number;
+  layerEdges: WallLayerEdges;
   showPrimedWhite: boolean;
   openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
   const panelData = useMemo(() => {
-    const coverageLayer =
-      outsideInsulation > 0 ? outsideInsulation : HOUSE_WRAP_THICKNESS;
-    const { coverageStart, coverageEnd } = getExteriorCoverageRange(
-      wall,
-      coverageLayer,
-    );
+    const edge = layerEdges.panel;
+    const { coverageStart, coverageEnd } = edge;
     const wallHeightM = wallHeight * MM;
     const panelThickness = YTTERPANEL_THICKNESS * MM;
     const boardHeight = YTTERPANEL_BOARD_WIDTH * MM;
@@ -1895,12 +2068,7 @@ function WallHorizontalExteriorPanel({
     const seamShadowWidth = YTTERPANEL_SEAM_SHADOW_WIDTH * MM;
     const seamShadowDepth = YTTERPANEL_SEAM_SHADOW_DEPTH * MM;
     const totalLength = Math.max(coverageEnd - coverageStart, 0.001) * MM;
-    const framingDepth = wall.thickness * MM;
-    const weatherLayerDepth =
-      outsideInsulation > 0
-        ? framingDepth / 2 + outsideInsulation * MM
-        : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
-    const panelBackZ = -(weatherLayerDepth + FACADE_AIR_GAP * MM);
+    const panelBackZ = edge.innerFaceZ;
 
     const boards: {
       key: string;
@@ -2006,7 +2174,7 @@ function WallHorizontalExteriorPanel({
       boards,
       seamShadows,
     };
-  }, [openings, outsideInsulation, pineTexture, wall, wallHeight]);
+  }, [openings, layerEdges, pineTexture, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -2360,7 +2528,7 @@ function WallDrywallBoards({
 }
 
 /** Floor slab visualisation */
-function FloorSlab({ layout }: { layout: WallLayout }) {
+function FloorSlab({ layout }: { layout: LayoutLike }) {
   const geometry = useMemo(() => {
     const shape = new THREE.Shape();
     const corners = layout.outerCorners;
@@ -2384,12 +2552,145 @@ function FloorSlab({ layout }: { layout: WallLayout }) {
   );
 }
 
+// ---- Layer Corner Labels ----
+// Visualises each layer's corner points (start & end, inner & outer face)
+// as small colored spheres sitting on top of the wall at each corner.
+
+const LAYER_CORNER_COLORS: Record<string, string> = {
+  framing: "#ef4444", // red
+  outsideDrywall: "#f97316", // orange
+  outsideInsulation: "#eab308", // yellow
+  weatherSurface: "#22c55e", // green
+  spiklakt: "#3b82f6", // blue
+  panel: "#a855f7", // purple
+};
+
+const LAYER_CORNER_LABELS: Record<string, string> = {
+  framing: "Stomme",
+  outsideDrywall: "Vindskydd",
+  outsideInsulation: "Isolering",
+  weatherSurface: "Väderyta",
+  spiklakt: "Spikläkt",
+  panel: "Panel",
+};
+
+function LayerCornerLabels({
+  layout,
+  wallHeight,
+  layerEdgesMap,
+  visibleLayers,
+}: {
+  layout: LayoutLike;
+  wallHeight: number;
+  layerEdgesMap: Record<string, WallLayerEdges>;
+  visibleLayers: Record<string, boolean>;
+}) {
+  const markers = useMemo(() => {
+    const result: {
+      key: string;
+      labelPos: [number, number, number];
+      targetPos: [number, number, number];
+      color: string;
+      label: string;
+    }[] = [];
+
+    const wallTopY = wallHeight * MM;
+    const layerKeys = Object.keys(
+      LAYER_CORNER_COLORS,
+    ) as (keyof WallLayerEdges)[];
+
+    for (const wall of layout.walls) {
+      const edges = layerEdgesMap[wall.id];
+      if (!edges) continue;
+
+      const dir = wall.direction;
+      const outN = { x: -wall.inwardNormal.x, y: -wall.inwardNormal.y };
+      const originX = wall.start.x;
+      const originY = wall.start.y;
+      // wall.start is at the outer face, but Z values are relative to the
+      // wall centerline.  Shift by half the thickness so the perpendicular
+      // offset is measured from the outer face instead.
+      const wallHalf = wall.thickness / 2;
+
+      // Count visible layers so we can stack labels
+      const activeKeys = layerKeys.filter((k) => visibleLayers[k]);
+
+      for (let li = 0; li < activeKeys.length; li++) {
+        const layerName = activeKeys[li];
+        const edge = edges[layerName];
+        const color = LAYER_CORNER_COLORS[layerName];
+        const label = LAYER_CORNER_LABELS[layerName];
+        const labelY = wallTopY + 0.08 + li * 0.06;
+
+        // Perpendicular offset from wall.start (outer face) in mm:
+        // -wallHalf compensates for Z=0 being at the center, not the outer face
+        const perpOut = (zFace: number) => -wallHalf - zFace / MM;
+
+        const corners: { suffix: string; alongMm: number; zFace: number }[] = [
+          { suffix: "S↗", alongMm: edge.coverageStart, zFace: edge.outerFaceZ },
+          { suffix: "S↙", alongMm: edge.coverageStart, zFace: edge.innerFaceZ },
+          { suffix: "E↗", alongMm: edge.coverageEnd, zFace: edge.outerFaceZ },
+          { suffix: "E↙", alongMm: edge.coverageEnd, zFace: edge.innerFaceZ },
+        ];
+
+        for (const c of corners) {
+          const wx = originX + dir.x * c.alongMm + outN.x * perpOut(c.zFace);
+          const wy = originY + dir.y * c.alongMm + outN.y * perpOut(c.zFace);
+          const xWorld = wx * MM;
+          const zWorld = -wy * MM;
+
+          result.push({
+            key: `${wall.id}-${layerName}-${c.suffix}`,
+            labelPos: [xWorld, labelY, zWorld],
+            targetPos: [xWorld, wallTopY, zWorld],
+            color,
+            label: `${label} ${c.suffix}`,
+          });
+        }
+      }
+    }
+
+    return result;
+  }, [layout.walls, wallHeight, layerEdgesMap, visibleLayers]);
+
+  return (
+    <group>
+      {markers.map((m) => (
+        <group key={m.key}>
+          <line>
+            <bufferGeometry>
+              <bufferAttribute
+                attach="attributes-position"
+                args={[new Float32Array([...m.targetPos, ...m.labelPos]), 3]}
+                count={2}
+                itemSize={3}
+              />
+            </bufferGeometry>
+            <lineBasicMaterial color={m.color} linewidth={1} />
+          </line>
+          <Text
+            position={m.labelPos}
+            fontSize={0.03}
+            color={m.color}
+            anchorX="center"
+            anchorY="bottom"
+            outlineWidth={0.002}
+            outlineColor="#000000"
+          >
+            {m.label}
+          </Text>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 /** Corner marker spheres (for visual debugging) */
 function CornerMarkers({
   layout,
   showInner,
 }: {
-  layout: WallLayout;
+  layout: LayoutLike;
   showInner: boolean;
 }) {
   return (
@@ -2416,7 +2717,7 @@ function WallLabels({
   layout,
   wallHeight,
 }: {
-  layout: WallLayout;
+  layout: LayoutLike;
   wallHeight: number;
 }) {
   return (
@@ -2656,7 +2957,7 @@ function WallStudDimensions({ wall }: { wall: Wall }) {
 }
 
 /** Stud spacing dimension lines — only visible for camera-facing walls */
-function StudDimensions({ layout }: { layout: WallLayout }) {
+function StudDimensions({ layout }: { layout: LayoutLike }) {
   return (
     <group>
       {layout.walls.map((w) => (
@@ -2953,10 +3254,12 @@ function WallLayoutModel({
   shellLayout,
   wallHeight,
   outsideInsulation,
+  outsideDrywall,
   installationLayer,
   installationLayerStudLength,
   showOsb,
   showDrywall,
+  showOutsideDrywall,
   showCavityInsulation,
   showHouseWrap,
   showMusband,
@@ -2968,6 +3271,7 @@ function WallLayoutModel({
   showVerticalTopPlate,
   showLabels,
   showCorners,
+  showLayerCorners,
   showStudDimensions,
   wallOpenings,
   selectedOpeningId,
@@ -2977,17 +3281,19 @@ function WallLayoutModel({
   controlsRef,
   showOpenings,
 }: {
-  framingLayout: WallLayout;
-  installationLayout: WallLayout | null;
-  osbLayout: WallLayout | null;
-  drywallLayout: WallLayout | null;
-  shellLayout: WallLayout;
+  framingLayout: LayoutLike;
+  installationLayout: LayoutLike | null;
+  osbLayout: LayoutLike | null;
+  drywallLayout: LayoutLike | null;
+  shellLayout: LayoutLike;
   wallHeight: number;
   outsideInsulation: number;
+  outsideDrywall: number;
   installationLayer: number;
   installationLayerStudLength: number;
   showOsb: boolean;
   showDrywall: boolean;
+  showOutsideDrywall: boolean;
   showCavityInsulation: boolean;
   showHouseWrap: boolean;
   showMusband: boolean;
@@ -2999,6 +3305,7 @@ function WallLayoutModel({
   showVerticalTopPlate: boolean;
   showLabels: boolean;
   showCorners: boolean;
+  showLayerCorners: boolean;
   showStudDimensions: boolean;
   wallOpenings: Record<string, WallOpening[]>;
   selectedOpeningId: string | null;
@@ -3009,6 +3316,18 @@ function WallLayoutModel({
   controlsRef: React.RefObject<any>;
   showOpenings: boolean;
 }) {
+  const layerEdgesMap = useMemo(() => {
+    const map: Record<string, WallLayerEdges> = {};
+    for (const w of framingLayout.walls) {
+      // ParametricWall has .layers — use parametric bridge when available
+      const pw = w as ParametricWall;
+      if (pw.layers) {
+        map[w.id] = wallLayerEdgesFromParametric(pw);
+      }
+    }
+    return map;
+  }, [framingLayout.walls]);
+
   return (
     <group>
       <FloorSlab layout={shellLayout} />
@@ -3060,7 +3379,7 @@ function WallLayoutModel({
           <WallMusband
             key={`musband-${w.id}`}
             wall={w}
-            outsideInsulation={outsideInsulation}
+            layerEdges={layerEdgesMap[w.id]}
           />
         ))}
 
@@ -3070,7 +3389,7 @@ function WallLayoutModel({
             key={`spiklakt-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
-            outsideInsulation={outsideInsulation}
+            layerEdges={layerEdgesMap[w.id]}
             openings={wallOpenings[w.id] || []}
           />
         ))}
@@ -3081,7 +3400,7 @@ function WallLayoutModel({
             key={`vertical-spiklakt-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
-            outsideInsulation={outsideInsulation}
+            layerEdges={layerEdgesMap[w.id]}
             openings={wallOpenings[w.id] || []}
           />
         ))}
@@ -3092,7 +3411,7 @@ function WallLayoutModel({
             key={`ytterpanel-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
-            outsideInsulation={outsideInsulation}
+            layerEdges={layerEdgesMap[w.id]}
             showPrimedWhite={showPrimedWhiteExteriorPanel}
             openings={wallOpenings[w.id] || []}
           />
@@ -3104,7 +3423,7 @@ function WallLayoutModel({
             key={`horizontal-ytterpanel-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
-            outsideInsulation={outsideInsulation}
+            layerEdges={layerEdgesMap[w.id]}
             showPrimedWhite={showPrimedWhiteExteriorPanel}
             openings={wallOpenings[w.id] || []}
           />
@@ -3160,6 +3479,18 @@ function WallLayoutModel({
           />
         ))}
 
+      {showOutsideDrywall &&
+        showFraming &&
+        framingLayout.walls.map((w) => (
+          <WallOutsideDrywall
+            key={`outside-drywall-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+            layerEdges={layerEdgesMap[w.id]}
+            openings={wallOpenings[w.id] || []}
+          />
+        ))}
+
       {outsideInsulation > 0 &&
         framingLayout.walls.map((w) => (
           <WallInsulationSheets
@@ -3167,6 +3498,7 @@ function WallLayoutModel({
             wall={w}
             wallHeight={wallHeight}
             thickness={outsideInsulation}
+            layerEdges={layerEdgesMap[w.id]}
             openings={wallOpenings[w.id] || []}
           />
         ))}
@@ -3181,6 +3513,21 @@ function WallLayoutModel({
         <CornerMarkers
           layout={showFraming ? framingLayout : shellLayout}
           showInner={showFraming}
+        />
+      )}
+      {showLayerCorners && showFraming && (
+        <LayerCornerLabels
+          layout={framingLayout}
+          wallHeight={wallHeight}
+          layerEdgesMap={layerEdgesMap}
+          visibleLayers={{
+            framing: true,
+            outsideDrywall: showOutsideDrywall,
+            outsideInsulation: outsideInsulation > 0,
+            weatherSurface: outsideInsulation > 0,
+            spiklakt: showStandingExteriorPanel || showHorizontalExteriorPanel,
+            panel: showStandingExteriorPanel || showHorizontalExteriorPanel,
+          }}
         />
       )}
       {showStudDimensions && showFraming && (
@@ -3240,8 +3587,10 @@ export default function WallLayoutScene() {
   const [showVaporBarrier, setShowVaporBarrier] = useState(false);
   const [showOsb, setShowOsb] = useState(false);
   const [showDrywall, setShowDrywall] = useState(false);
+  const [showOutsideDrywall, setShowOutsideDrywall] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showCorners, setShowCorners] = useState(false);
+  const [showLayerCorners, setShowLayerCorners] = useState(false);
   const [showStudDimensions, setShowStudDimensions] = useState(true);
   const [showVerticalTopPlate, setShowVerticalTopPlate] = useState(false);
   const [showCavityInsulation, setShowCavityInsulation] = useState(false);
@@ -3270,55 +3619,109 @@ export default function WallLayoutScene() {
   const installationLayer = INSTALLATION_LAYER_OPTIONS[installationLayerIndex];
   const installationLayerStudLength =
     INSTALLATION_LAYER_STUD_LENGTH_OPTIONS[installationLayerStudLengthIndex];
+  const outsideDrywall = showOutsideDrywall ? OUTSIDE_DRYWALL_THICKNESS : 0;
 
   const baseOuterCorners = useMemo(() => {
     return PRESETS[presetIndex].create(thickness, studSpacing).outerCorners;
   }, [presetIndex, thickness, studSpacing]);
 
+  // Build layer definitions for the parametric system
+  const layerDefs = useMemo((): LayerDef[] => {
+    const defs: LayerDef[] = [
+      { id: "framing", name: "Stomme", thickness, side: "exterior", order: 0 },
+    ];
+    let extOrder = 1;
+    if (outsideDrywall > 0) {
+      defs.push({
+        id: "outsideDrywall",
+        name: "Vindskydd",
+        thickness: outsideDrywall,
+        side: "exterior",
+        order: extOrder++,
+      });
+    }
+    if (outsideInsulation > 0) {
+      defs.push({
+        id: "outsideInsulation",
+        name: "Isolering",
+        thickness: outsideInsulation,
+        side: "exterior",
+        order: extOrder++,
+      });
+    }
+    defs.push({
+      id: "spiklakt",
+      name: "Spikläkt",
+      thickness: SPIKLAKT_THICKNESS,
+      side: "exterior",
+      order: extOrder++,
+    });
+    defs.push({
+      id: "panel",
+      name: "Panel",
+      thickness: YTTERPANEL_THICKNESS,
+      side: "exterior",
+      order: extOrder++,
+    });
+    return defs;
+  }, [thickness, outsideDrywall, outsideInsulation]);
+
+  // Parametric layout: framing + all exterior layers resolved in one pass
+  const parametricLayout = useMemo(() => {
+    return buildParametricLayout(baseOuterCorners, {
+      layers: layerDefs,
+      studSpacing,
+      studWidth: 45,
+      studDepth: thickness,
+    });
+  }, [baseOuterCorners, layerDefs, studSpacing, thickness]);
+
+  // Framing layout — walls from the parametric system (ParametricWall is Wall-compatible)
+  const layout: LayoutLike = useMemo(
+    () => ({
+      walls: parametricLayout.walls as unknown as Wall[],
+      outerCorners: parametricLayout.framingOuterCorners,
+      innerCorners: parametricLayout.framingInnerCorners,
+    }),
+    [parametricLayout],
+  );
+
+  // Shell layout — building outer boundary for floor slab and non-framing view
   const shellLayout = useMemo(() => {
     return new WallLayout(baseOuterCorners, {
-      thickness: thickness + outsideInsulation,
+      thickness: thickness + outsideDrywall + outsideInsulation,
       studSpacing,
       studDepth: thickness,
     });
-  }, [baseOuterCorners, outsideInsulation, studSpacing, thickness]);
+  }, [
+    baseOuterCorners,
+    outsideDrywall,
+    outsideInsulation,
+    studSpacing,
+    thickness,
+  ]);
 
-  const framingOuterCorners = useMemo(() => {
-    if (outsideInsulation === 0) return baseOuterCorners;
-    return new WallLayout(baseOuterCorners, {
-      thickness: outsideInsulation,
-      studSpacing,
-    }).innerCorners;
-  }, [baseOuterCorners, outsideInsulation, studSpacing]);
-
-  const layout = useMemo(() => {
-    return new WallLayout(framingOuterCorners, {
-      thickness,
-      studSpacing,
-      studDepth: thickness,
-    });
-  }, [framingOuterCorners, studSpacing, thickness]);
-
+  // Interior layouts — constructed from the framing inner corners
   const installationLayout = useMemo(() => {
     if (installationLayer === 0) return null;
-    return new WallLayout(layout.innerCorners, {
+    return new WallLayout(parametricLayout.framingInnerCorners, {
       thickness: installationLayer,
       studSpacing,
       studWidth: 45,
       studDepth: installationLayer,
     });
-  }, [installationLayer, layout.innerCorners, studSpacing]);
+  }, [installationLayer, parametricLayout.framingInnerCorners, studSpacing]);
 
   const osbLayout = useMemo(() => {
     const osbOuterCorners = installationLayout
       ? installationLayout.innerCorners
-      : layout.innerCorners;
+      : parametricLayout.framingInnerCorners;
     return new WallLayout(osbOuterCorners, {
       thickness: OSB_BOARD_THICKNESS,
       studSpacing,
       studDepth: OSB_BOARD_THICKNESS,
     });
-  }, [installationLayout, layout.innerCorners, studSpacing]);
+  }, [installationLayout, parametricLayout.framingInnerCorners, studSpacing]);
 
   const drywallLayout = useMemo(() => {
     const drywallOuterCorners =
@@ -3326,7 +3729,7 @@ export default function WallLayoutScene() {
         ? osbLayout.innerCorners
         : installationLayout
           ? installationLayout.innerCorners
-          : layout.innerCorners;
+          : parametricLayout.framingInnerCorners;
     return new WallLayout(drywallOuterCorners, {
       thickness: DRYWALL_BOARD_THICKNESS,
       studSpacing,
@@ -3336,7 +3739,7 @@ export default function WallLayoutScene() {
     showOsb,
     osbLayout,
     installationLayout,
-    layout.innerCorners,
+    parametricLayout.framingInnerCorners,
     studSpacing,
   ]);
 
@@ -3605,6 +4008,11 @@ export default function WallLayoutScene() {
                   toggle: () => setShowHouseWrap((v) => !v),
                 },
                 {
+                  label: "Vindskyddsskiva",
+                  checked: showOutsideDrywall,
+                  toggle: () => setShowOutsideDrywall((v) => !v),
+                },
+                {
                   label: "Musband",
                   checked: showMusband,
                   toggle: () => setShowMusband((v) => !v),
@@ -3660,6 +4068,11 @@ export default function WallLayoutScene() {
                   label: "Hörnpunkter",
                   checked: showCorners,
                   toggle: () => setShowCorners((v) => !v),
+                },
+                {
+                  label: "Lagerhörnpunkter",
+                  checked: showLayerCorners,
+                  toggle: () => setShowLayerCorners((v) => !v),
                 },
                 {
                   label: "Regelmått",
@@ -3776,7 +4189,7 @@ export default function WallLayoutScene() {
           <div className="p-3 bg-zinc-700/30 rounded-lg space-y-1">
             <h3 className="text-sm font-medium text-zinc-300">Layoutinfo</h3>
             <div className="text-xs text-zinc-400 space-y-0.5">
-              <div>Antal väggar: {layout.count}</div>
+              <div>Antal väggar: {layout.walls.length}</div>
               <div>Outside insulation: {outsideInsulation} mm</div>
               <div>Ventilerad luftspalt bakom fasad: {FACADE_AIR_GAP} mm</div>
               <div>
@@ -3905,10 +4318,12 @@ export default function WallLayoutScene() {
             shellLayout={shellLayout}
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
+            outsideDrywall={outsideDrywall}
             installationLayer={installationLayer}
             installationLayerStudLength={installationLayerStudLength}
             showOsb={showOsb}
             showDrywall={showDrywall}
+            showOutsideDrywall={showOutsideDrywall}
             showCavityInsulation={showCavityInsulation}
             showHouseWrap={showHouseWrap}
             showMusband={showMusband}
@@ -3920,6 +4335,7 @@ export default function WallLayoutScene() {
             showVerticalTopPlate={showVerticalTopPlate}
             showLabels={showLabels}
             showCorners={showCorners}
+            showLayerCorners={showLayerCorners}
             showStudDimensions={showStudDimensions}
             wallOpenings={wallOpenings}
             selectedOpeningId={selectedOpeningId}

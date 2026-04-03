@@ -91,11 +91,11 @@ export function computeOpeningFraming(
     });
   }
 
-  // Header: horizontal beam spanning trimmer-to-trimmer at opening top
+  // Header: horizontal beam fitting between the inner faces of the trimmers
   const headerHeight = studWidth;
   const headerBottom = oTop;
   const headerCenterX = (oLeft + oRight) / 2;
-  const headerSpan = oRight - oLeft + 2 * studWidth;
+  const headerSpan = oRight - oLeft;
 
   if (headerBottom + headerHeight <= wallHeight - PLATE_HEIGHT + 0.1) {
     members.push({
