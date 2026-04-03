@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Canvas, useFrame, ThreeEvent } from "@react-three/fiber";
 import {
   OrbitControls,
   PerspectiveCamera,
@@ -15,7 +15,14 @@ import {
   fromPoints,
   traceLayout,
 } from "../lib/wallLayout";
-import type { Wall } from "../lib/wallLayout";
+import type { Wall, WallOpening } from "../lib/wallLayout";
+import {
+  computeOpeningFraming,
+  subtractOpeningsFromRect,
+  mapOpeningsToWall,
+  splitHorizontalSpan,
+  splitVerticalSpan,
+} from "../lib/wallLayout/openings";
 import { getOsbTexture, getPineTexture } from "../lib/woodTexture";
 
 // ---- Constants ----
@@ -492,10 +499,12 @@ function WallFraming({
   wall,
   wallHeight,
   showVerticalTopPlate,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
   showVerticalTopPlate: boolean;
+  openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
@@ -533,12 +542,47 @@ function WallFraming({
           )
         : null;
 
-    // Bottom plate
-    result.push({
-      key: "bp",
-      pos: [effLen / 2, plateH / 2, 0],
-      size: [effLen, plateH, studDM],
-    });
+    // Compute opening framing
+    const openingFramings = openings.map((o) =>
+      computeOpeningFraming(
+        o,
+        wall.studLayout.studs,
+        wall.effectiveLength,
+        wallHeight,
+        studW,
+        studD,
+      ),
+    );
+    const removedIndices = new Set(
+      openingFramings.flatMap((f) => f.removedStudIndices),
+    );
+
+    // Bottom plate — split around door openings (bottom ≈ 0)
+    const doorOpenings = openings.filter((o) => o.bottom < PLATE_HEIGHT + 1);
+    if (doorOpenings.length === 0) {
+      result.push({
+        key: "bp",
+        pos: [effLen / 2, plateH / 2, 0],
+        size: [effLen, plateH, studDM],
+      });
+    } else {
+      const plateSpans = splitHorizontalSpan(
+        0,
+        wall.effectiveLength,
+        0,
+        PLATE_HEIGHT,
+        doorOpenings,
+      );
+      for (let si = 0; si < plateSpans.length; si++) {
+        const span = plateSpans[si];
+        const spanW = (span.end - span.start) * MM;
+        result.push({
+          key: `bp-${si}`,
+          pos: [((span.start + span.end) / 2) * MM, plateH / 2, 0],
+          size: [spanW, plateH, studDM],
+        });
+      }
+    }
 
     // Top plate
     result.push({
@@ -555,8 +599,9 @@ function WallFraming({
       });
     }
 
-    // Studs
+    // Studs — skip removed ones
     for (let i = 0; i < wall.studLayout.studs.length; i++) {
+      if (removedIndices.has(i)) continue;
       const stud = wall.studLayout.studs[i];
       const x = stud.centerPosition * MM;
       if (verticalPlateH > 0 && notchedStudGeometry) {
@@ -574,14 +619,23 @@ function WallFraming({
       }
     }
 
-    // California corner studs stay full height; only the regular studs are
-    // notched for the vertical top plate in the main framing implementation.
+    // Opening framing members (trimmers, headers, sills, cripples)
+    for (const framing of openingFramings) {
+      for (const member of framing.members) {
+        result.push({
+          key: `of-${framing.opening.id}-${member.type}-${Math.round(member.centerX)}`,
+          pos: [member.centerX * MM, member.centerY * MM, 0],
+          size: [member.width * MM, member.height * MM, member.depth * MM],
+        });
+      }
+    }
+
+    // California corner studs stay full height
     for (let i = 0; i < wall.studLayout.cornerStuds.length; i++) {
       const cs = wall.studLayout.cornerStuds[i];
       const x = cs.centerPosition * MM;
       const halfDepth = (studD / 2) * MM;
       const halfStudW = (studW / 2) * MM;
-      // Inner: offset +Z (toward interior), Outer: offset -Z (toward exterior)
       const zOffset =
         cs.offsetSide === "inner"
           ? halfDepth - halfStudW
@@ -589,12 +643,12 @@ function WallFraming({
       result.push({
         key: `cs-${i}`,
         pos: [x, plateH + fullStudH / 2, zOffset],
-        size: [studDM, fullStudH, studWM], // swapped width/depth (rotated 90°)
+        size: [studDM, fullStudH, studWM],
       });
     }
 
     return result;
-  }, [showVerticalTopPlate, wall, wallHeight]);
+  }, [showVerticalTopPlate, wall, wallHeight, openings]);
 
   // Position the group at the wall's physical start, rotated to face the correct direction
   const { position, rotationY } = useMemo(() => {
@@ -689,10 +743,12 @@ function WallInsulationSheets({
   wall,
   wallHeight,
   thickness,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
   thickness: number;
+  openings: WallOpening[];
 }) {
   const sheets = useMemo(() => {
     const result: {
@@ -748,23 +804,29 @@ function WallInsulationSheets({
         const clippedStart = Math.max(rawStart, coverageStart);
         const clippedEnd = Math.min(rawEnd, coverageEnd);
         const sheetWidth = clippedEnd - clippedStart;
-        const tone = (rowIndex + sheetIndex) % 2 === 0 ? "#8f7650" : "#9b8159";
 
         if (sheetWidth <= 0.001) {
           sheetIndex += 1;
           continue;
         }
 
-        result.push({
-          key: `ins-${rowIndex}-${sheetIndex}`,
-          pos: [
-            (clippedStart + sheetWidth / 2) * MM,
-            (yStart + sheetHeight / 2) * MM,
-            zCenter,
-          ],
-          size: [sheetWidth * MM, sheetHeight * MM, depthM],
-          color: tone,
-        });
+        const pieces = subtractOpeningsFromRect(
+          clippedStart,
+          yStart,
+          sheetWidth,
+          sheetHeight,
+          openings,
+        );
+        for (let pi = 0; pi < pieces.length; pi++) {
+          const p = pieces[pi];
+          result.push({
+            key: `ins-${rowIndex}-${sheetIndex}-${pi}`,
+            pos: [(p.x + p.w / 2) * MM, (p.y + p.h / 2) * MM, zCenter],
+            size: [p.w * MM, p.h * MM, depthM],
+            color:
+              (rowIndex + sheetIndex + pi) % 2 === 0 ? "#8f7650" : "#9b8159",
+          });
+        }
 
         sheetIndex += 1;
       }
@@ -774,7 +836,7 @@ function WallInsulationSheets({
     }
 
     return result;
-  }, [thickness, wall, wallHeight]);
+  }, [openings, thickness, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -815,10 +877,12 @@ function WallCavityInsulation({
   wall,
   wallHeight,
   showVerticalTopPlate,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
   showVerticalTopPlate: boolean;
+  openings: WallOpening[];
 }) {
   const panels = useMemo(() => {
     const result: {
@@ -880,26 +944,57 @@ function WallCavityInsulation({
         for (let panelIndex = 0; panelIndex < panelCount; panelIndex++) {
           const panelStart = bayStart + panelIndex * panelWidth;
           const xCenter = panelStart + panelWidth / 2;
-          const panelGeometry =
-            notchHeight > 0
-              ? createNotchedStudGeometry(
-                  panelWidth * MM,
-                  panelHeight * MM,
-                  panelDepth,
-                  notchHeight * MM,
-                  VERTICAL_PLATE_THICKNESS * MM,
-                )
-              : undefined;
 
-          result.push({
-            key: `cavity-${i}-${rowIndex}-${panelIndex}`,
-            pos: [xCenter * MM, (rowStart + panelHeight / 2) * MM, zCenter],
-            size: panelGeometry
-              ? undefined
-              : [panelWidth * MM, panelHeight * MM, panelDepth],
-            geometry: panelGeometry,
-            color: (rowIndex + panelIndex) % 2 === 0 ? "#d8bf72" : "#ccb165",
-          });
+          // Skip panels that overlap an opening
+          const pieces = subtractOpeningsFromRect(
+            panelStart,
+            rowStart,
+            panelWidth,
+            panelHeight,
+            openings,
+          );
+          if (
+            pieces.length === 1 &&
+            Math.abs(pieces[0].w - panelWidth) < 1 &&
+            Math.abs(pieces[0].h - panelHeight) < 1
+          ) {
+            // No overlap — render full panel
+            const panelGeometry =
+              notchHeight > 0
+                ? createNotchedStudGeometry(
+                    panelWidth * MM,
+                    panelHeight * MM,
+                    panelDepth,
+                    notchHeight * MM,
+                    VERTICAL_PLATE_THICKNESS * MM,
+                  )
+                : undefined;
+
+            result.push({
+              key: `cavity-${i}-${rowIndex}-${panelIndex}`,
+              pos: [xCenter * MM, (rowStart + panelHeight / 2) * MM, zCenter],
+              size: panelGeometry
+                ? undefined
+                : [panelWidth * MM, panelHeight * MM, panelDepth],
+              geometry: panelGeometry,
+              color: (rowIndex + panelIndex) % 2 === 0 ? "#d8bf72" : "#ccb165",
+            });
+          } else {
+            // Partial overlap — render remaining pieces as simple boxes
+            for (let pi = 0; pi < pieces.length; pi++) {
+              const p = pieces[pi];
+              result.push({
+                key: `cavity-${i}-${rowIndex}-${panelIndex}-p${pi}`,
+                pos: [(p.x + p.w / 2) * MM, (p.y + p.h / 2) * MM, zCenter],
+                size: [p.w * MM, p.h * MM, panelDepth],
+                geometry: undefined,
+                color:
+                  (rowIndex + panelIndex + pi) % 2 === 0
+                    ? "#d8bf72"
+                    : "#ccb165",
+              });
+            }
+          }
         }
 
         rowStart += CAVITY_INSULATION_SHEET_HEIGHT;
@@ -908,7 +1003,7 @@ function WallCavityInsulation({
     }
 
     return result;
-  }, [showVerticalTopPlate, wall, wallHeight]);
+  }, [showVerticalTopPlate, wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -959,12 +1054,14 @@ function WallInstallationLayer({
   wallHeight,
   thickness,
   maxStudLength,
+  openings,
 }: {
   wall: Wall;
   framingWall: Wall;
   wallHeight: number;
   thickness: number;
   maxStudLength: number;
+  openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
@@ -1071,13 +1168,25 @@ function WallInstallationLayer({
           coverageEnd - xStart,
         );
 
-        const yCenter = bayBottom + bayHeight / 2;
-        result.push({
-          key: `install-insulation-${rowIndex}-${panelIndex}`,
-          pos: [(xStart + panelWidth / 2) * MM, yCenter * MM, layerCenterZ],
-          size: [panelWidth * MM, bayHeight * MM, studDepthM],
-          color: (rowIndex + panelIndex) % 2 === 0 ? "#d8bf72" : "#ccb165",
-        });
+        // Skip insulation panels that overlap an opening
+        const mappedOpenings = mapOpeningsToWall(openings, framingWall, wall);
+        const pieces = subtractOpeningsFromRect(
+          xStart,
+          bayBottom,
+          panelWidth,
+          bayHeight,
+          mappedOpenings,
+        );
+        for (let pi = 0; pi < pieces.length; pi++) {
+          const p = pieces[pi];
+          result.push({
+            key: `install-insulation-${rowIndex}-${panelIndex}-${pi}`,
+            pos: [(p.x + p.w / 2) * MM, (p.y + p.h / 2) * MM, layerCenterZ],
+            size: [p.w * MM, p.h * MM, studDepthM],
+            color:
+              (rowIndex + panelIndex + pi) % 2 === 0 ? "#d8bf72" : "#ccb165",
+          });
+        }
 
         xStart += CAVITY_INSULATION_SHEET_HEIGHT;
         panelIndex += 1;
@@ -1085,7 +1194,7 @@ function WallInstallationLayer({
     }
 
     return result;
-  }, [framingWall, maxStudLength, thickness, wall, wallHeight]);
+  }, [framingWall, maxStudLength, openings, thickness, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1136,30 +1245,40 @@ function WallInstallationLayer({
 function WallHouseWrap({
   wall,
   wallHeight,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
+  openings: WallOpening[];
 }) {
-  const wrapMesh = useMemo(() => {
+  const wrapPieces = useMemo(() => {
     const wrapThicknessMm = HOUSE_WRAP_THICKNESS;
     const wrapThickness = wrapThicknessMm * MM;
     const framingDepth = wall.thickness * MM;
-    const wallH = wallHeight * MM;
     const { coverageStart, coverageEnd } = getExteriorCoverageRange(
       wall,
       wrapThicknessMm,
     );
-    const wrapLen = Math.max(coverageEnd - coverageStart, 0.001) * MM;
+    const zPos = -(framingDepth / 2 + wrapThickness / 2);
 
-    return {
-      pos: [
-        coverageStart * MM + wrapLen / 2,
-        wallH / 2,
-        -(framingDepth / 2 + wrapThickness / 2),
-      ] as [number, number, number],
-      size: [wrapLen, wallH, wrapThickness] as [number, number, number],
-    };
-  }, [wall, wallHeight]);
+    const rects = subtractOpeningsFromRect(
+      coverageStart,
+      0,
+      coverageEnd - coverageStart,
+      wallHeight,
+      openings,
+    );
+
+    return rects.map((r, i) => ({
+      key: `wrap-piece-${i}`,
+      pos: [(r.x + r.w / 2) * MM, (r.y + r.h / 2) * MM, zPos] as [
+        number,
+        number,
+        number,
+      ],
+      size: [r.w * MM, r.h * MM, wrapThickness] as [number, number, number],
+    }));
+  }, [wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1173,22 +1292,24 @@ function WallHouseWrap({
 
   return (
     <group position={position} rotation={[0, rotationY, 0]}>
-      <group position={wrapMesh.pos}>
-        <mesh renderOrder={1}>
-          <boxGeometry args={wrapMesh.size} />
-          <meshStandardMaterial
-            color="#e1e1e1"
-            transparent
-            opacity={0.85}
-            roughness={0.9}
-            metalness={0}
-          />
-        </mesh>
-        <lineSegments>
-          <edgesGeometry args={[new THREE.BoxGeometry(...wrapMesh.size)]} />
-          <lineBasicMaterial color="#e1e1e1" linewidth={1} />
-        </lineSegments>
-      </group>
+      {wrapPieces.map((piece) => (
+        <group key={piece.key} position={piece.pos}>
+          <mesh renderOrder={1}>
+            <boxGeometry args={piece.size} />
+            <meshStandardMaterial
+              color="#e1e1e1"
+              transparent
+              opacity={0.85}
+              roughness={0.9}
+              metalness={0}
+            />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(...piece.size)]} />
+            <lineBasicMaterial color="#e1e1e1" linewidth={1} />
+          </lineSegments>
+        </group>
+      ))}
     </group>
   );
 }
@@ -1300,10 +1421,12 @@ function WallSpiklakt({
   wall,
   wallHeight,
   outsideInsulation,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
   outsideInsulation: number;
+  openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
@@ -1314,47 +1437,59 @@ function WallSpiklakt({
       wall,
       coverageLayer,
     );
-    const length = Math.max(coverageEnd - coverageStart, 0.001) * MM;
     const thickness = SPIKLAKT_THICKNESS * MM;
     const height = SPIKLAKT_HEIGHT * MM;
+    const heightMm = SPIKLAKT_HEIGHT;
     const wallHeightM = wallHeight * MM;
     const framingDepth = wall.thickness * MM;
     const weatherLayerDepth =
       outsideInsulation > 0
         ? framingDepth / 2 + outsideInsulation * MM
         : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
+    const zPos = -(weatherLayerDepth + thickness / 2);
 
-    const rows: { key: string; pos: [number, number, number] }[] = [];
+    const rows: {
+      key: string;
+      pos: [number, number, number];
+      size: [number, number, number];
+    }[] = [];
     let centerY = height / 2;
     let rowIndex = 0;
 
+    const addBattensAtY = (y: number, idx: number) => {
+      const yMm = y / MM;
+      const battenYBottom = yMm - heightMm / 2;
+      // Split batten around openings
+      const spans = splitHorizontalSpan(
+        coverageStart,
+        coverageEnd,
+        battenYBottom,
+        heightMm,
+        openings,
+      );
+      for (let si = 0; si < spans.length; si++) {
+        const span = spans[si];
+        const spanLen = (span.end - span.start) * MM;
+        rows.push({
+          key: `spiklakt-${idx}-${si}`,
+          pos: [(span.start + (span.end - span.start) / 2) * MM, y, zPos],
+          size: [spanLen, height, thickness],
+        });
+      }
+    };
+
     while (centerY < wallHeightM - height / 2 - 0.001) {
-      rows.push({
-        key: `spiklakt-${rowIndex}`,
-        pos: [
-          coverageStart * MM + length / 2,
-          centerY,
-          -(weatherLayerDepth + thickness / 2),
-        ],
-      });
+      addBattensAtY(centerY, rowIndex);
       centerY += SPIKLAKT_SPACING * MM;
       rowIndex += 1;
     }
 
     const topRowY = Math.max(height / 2, wallHeightM - height / 2);
-    if (rows.length === 0 || rows[rows.length - 1].pos[1] < topRowY - 0.001) {
-      rows.push({
-        key: `spiklakt-${rowIndex}`,
-        pos: [
-          coverageStart * MM + length / 2,
-          topRowY,
-          -(weatherLayerDepth + thickness / 2),
-        ],
-      });
+    if (rowIndex === 0 || centerY - SPIKLAKT_SPACING * MM < topRowY - 0.001) {
+      addBattensAtY(topRowY, rowIndex);
     }
 
     return {
-      size: [length, height, thickness] as [number, number, number],
       rows: rows.map((row) => ({
         ...row,
         color: getSubtleWoodColor(row.key),
@@ -1362,7 +1497,7 @@ function WallSpiklakt({
         texture: cloneTextureWithLengthwiseOffset(pineTexture, row.key, "x"),
       })),
     };
-  }, [outsideInsulation, pineTexture, wall, wallHeight]);
+  }, [outsideInsulation, pineTexture, wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1379,7 +1514,7 @@ function WallSpiklakt({
       {battens.rows.map((batten) => (
         <group key={batten.key} position={batten.pos}>
           <mesh castShadow receiveShadow renderOrder={2}>
-            <boxGeometry args={battens.size} />
+            <boxGeometry args={batten.size} />
             <meshStandardMaterial
               map={batten.texture}
               color={batten.color}
@@ -1388,7 +1523,7 @@ function WallSpiklakt({
             />
           </mesh>
           <lineSegments>
-            <edgesGeometry args={[new THREE.BoxGeometry(...battens.size)]} />
+            <edgesGeometry args={[new THREE.BoxGeometry(...batten.size)]} />
             <lineBasicMaterial color="#7f5a38" linewidth={1} />
           </lineSegments>
         </group>
@@ -1402,10 +1537,12 @@ function WallVerticalSpiklakt({
   wall,
   wallHeight,
   outsideInsulation,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
   outsideInsulation: number;
+  openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
@@ -1418,47 +1555,63 @@ function WallVerticalSpiklakt({
     );
     const length = Math.max(coverageEnd - coverageStart, 0.001) * MM;
     const thickness = SPIKLAKT_THICKNESS * MM;
-    const width = SPIKLAKT_HEIGHT * MM;
-    const wallHeightM = wallHeight * MM;
+    const widthM = SPIKLAKT_HEIGHT * MM;
+    const widthMm = SPIKLAKT_HEIGHT;
     const framingDepth = wall.thickness * MM;
     const weatherLayerDepth =
       outsideInsulation > 0
         ? framingDepth / 2 + outsideInsulation * MM
         : framingDepth / 2 + HOUSE_WRAP_THICKNESS * MM;
+    const zPos = -(weatherLayerDepth + thickness / 2);
 
-    const columns: { key: string; pos: [number, number, number] }[] = [];
-    let centerX = coverageStart * MM + width / 2;
+    const columns: {
+      key: string;
+      pos: [number, number, number];
+      size: [number, number, number];
+    }[] = [];
+
+    const addColumnAtX = (xM: number, idx: number) => {
+      const xMm = xM / MM;
+      // Split vertically around openings
+      const spans = splitVerticalSpan(
+        0,
+        wallHeight,
+        xMm - widthMm / 2,
+        widthMm,
+        openings,
+      );
+      for (let si = 0; si < spans.length; si++) {
+        const span = spans[si];
+        const spanH = (span.end - span.start) * MM;
+        columns.push({
+          key: `vertical-spiklakt-${idx}-${si}`,
+          pos: [xM, ((span.start + span.end) / 2) * MM, zPos],
+          size: [widthM, spanH, thickness],
+        });
+      }
+    };
+
+    let centerX = coverageStart * MM + widthM / 2;
     let columnIndex = 0;
 
-    while (centerX < coverageStart * MM + length - width / 2 - 0.001) {
-      columns.push({
-        key: `vertical-spiklakt-${columnIndex}`,
-        pos: [centerX, wallHeightM / 2, -(weatherLayerDepth + thickness / 2)],
-      });
+    while (centerX < coverageStart * MM + length - widthM / 2 - 0.001) {
+      addColumnAtX(centerX, columnIndex);
       centerX += SPIKLAKT_SPACING * MM;
       columnIndex += 1;
     }
 
     const endColumnX = Math.max(
-      coverageStart * MM + width / 2,
-      coverageStart * MM + length - width / 2,
+      coverageStart * MM + widthM / 2,
+      coverageStart * MM + length - widthM / 2,
     );
     if (
-      columns.length === 0 ||
-      columns[columns.length - 1].pos[0] < endColumnX - 0.001
+      columnIndex === 0 ||
+      centerX - SPIKLAKT_SPACING * MM < endColumnX - 0.001
     ) {
-      columns.push({
-        key: `vertical-spiklakt-${columnIndex}`,
-        pos: [
-          endColumnX,
-          wallHeightM / 2,
-          -(weatherLayerDepth + thickness / 2),
-        ],
-      });
+      addColumnAtX(endColumnX, columnIndex);
     }
 
     return {
-      size: [width, wallHeightM, thickness] as [number, number, number],
       columns: columns.map((column) => ({
         ...column,
         color: getSubtleWoodColor(column.key),
@@ -1466,7 +1619,7 @@ function WallVerticalSpiklakt({
         texture: cloneTextureWithLengthwiseOffset(pineTexture, column.key, "y"),
       })),
     };
-  }, [outsideInsulation, pineTexture, wall, wallHeight]);
+  }, [outsideInsulation, pineTexture, wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1483,7 +1636,7 @@ function WallVerticalSpiklakt({
       {battens.columns.map((batten) => (
         <group key={batten.key} position={batten.pos}>
           <mesh castShadow receiveShadow renderOrder={2}>
-            <boxGeometry args={battens.size} />
+            <boxGeometry args={batten.size} />
             <meshStandardMaterial
               map={batten.texture}
               color={batten.color}
@@ -1492,7 +1645,7 @@ function WallVerticalSpiklakt({
             />
           </mesh>
           <lineSegments>
-            <edgesGeometry args={[new THREE.BoxGeometry(...battens.size)]} />
+            <edgesGeometry args={[new THREE.BoxGeometry(...batten.size)]} />
             <lineBasicMaterial color="#7f5a38" linewidth={1} />
           </lineSegments>
         </group>
@@ -1507,11 +1660,13 @@ function WallStandingExteriorPanel({
   wallHeight,
   outsideInsulation,
   showPrimedWhite,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
   outsideInsulation: number;
   showPrimedWhite: boolean;
+  openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
@@ -1563,6 +1718,16 @@ function WallStandingExteriorPanel({
         Math.min(boardWidth, remainingWidth),
         0.001,
       );
+
+      // Check if this board overlaps any opening
+      const boardLeftMm = coverageStart + boardStart / MM;
+      const boardRightMm = boardLeftMm + actualBoardWidth / MM;
+      const boardOverlapsOpening = openings.some((o) => {
+        const oLeft = o.left;
+        const oRight = o.left + o.width;
+        return boardRightMm > oLeft + 0.1 && boardLeftMm < oRight - 0.1;
+      });
+
       const isFirst = index === 0;
       const isLast = boardStart + boardWidth >= totalLength - 0.001;
       const leftLapWidth = isFirst
@@ -1576,6 +1741,7 @@ function WallStandingExteriorPanel({
         0,
       );
       if (
+        !boardOverlapsOpening &&
         actualBoardWidth > 0 &&
         (centerWidth > 0 || leftLapWidth > 0 || rightLapWidth > 0)
       ) {
@@ -1630,7 +1796,7 @@ function WallStandingExteriorPanel({
       boards,
       seamShadows,
     };
-  }, [outsideInsulation, pineTexture, wall, wallHeight]);
+  }, [openings, outsideInsulation, pineTexture, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1702,11 +1868,13 @@ function WallHorizontalExteriorPanel({
   wallHeight,
   outsideInsulation,
   showPrimedWhite,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
   outsideInsulation: number;
   showPrimedWhite: boolean;
+  openings: WallOpening[];
 }) {
   const pineTexture = useMemo(() => getPineTexture(), []);
 
@@ -1758,6 +1926,17 @@ function WallHorizontalExteriorPanel({
         Math.min(boardHeight, remainingHeight),
         0.001,
       );
+
+      // Check if this board row overlaps any opening
+      const boardBottomMm = boardStart / MM;
+      const boardTopMm = boardBottomMm + actualBoardHeight / MM;
+      const boardOverlapsOpening = openings.some((o) => {
+        return (
+          boardTopMm > o.bottom + 0.1 &&
+          boardBottomMm < o.bottom + o.height - 0.1
+        );
+      });
+
       const isFirst = index === 0;
       const isLast = boardStart + boardHeight >= wallHeightM - 0.001;
       const lowerLapWidth = isFirst
@@ -1772,6 +1951,7 @@ function WallHorizontalExteriorPanel({
       );
 
       if (
+        !boardOverlapsOpening &&
         actualBoardHeight > 0 &&
         (centerWidth > 0 || lowerLapWidth > 0 || upperFalseWidth > 0)
       ) {
@@ -1826,7 +2006,7 @@ function WallHorizontalExteriorPanel({
       boards,
       seamShadows,
     };
-  }, [outsideInsulation, pineTexture, wall, wallHeight]);
+  }, [openings, outsideInsulation, pineTexture, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1896,11 +2076,13 @@ function WallHorizontalExteriorPanel({
 function WallVaporBarrier({
   wall,
   wallHeight,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
+  openings: WallOpening[];
 }) {
-  const barrierMesh = useMemo(() => {
+  const barrierPieces = useMemo(() => {
     const studThickness = wall.thickness * MM;
     const startOuterInset =
       wall.startCorner.joint === "through" &&
@@ -1922,23 +2104,33 @@ function WallVaporBarrier({
       wall.endCorner.interiorAngle > Math.PI
         ? studThickness
         : 0;
-    const coverageStart = startOuterInset - startInnerExtension;
-    const coverageEnd =
+    const coverageStartM = startOuterInset - startInnerExtension;
+    const coverageEndM =
       wall.effectiveLength * MM - endOuterInset + endInnerExtension;
-    const barrierLen = Math.max(coverageEnd - coverageStart, 0.001);
+    const coverageStartMm = coverageStartM / MM;
+    const coverageEndMm = coverageEndM / MM;
     const barrierThickness = HOUSE_WRAP_THICKNESS * MM;
     const framingDepth = wall.thickness * MM;
-    const wallH = wallHeight * MM;
+    const zPos = framingDepth / 2 + barrierThickness / 2;
 
-    return {
-      pos: [
-        coverageStart + barrierLen / 2,
-        wallH / 2,
-        framingDepth / 2 + barrierThickness / 2,
-      ] as [number, number, number],
-      size: [barrierLen, wallH, barrierThickness] as [number, number, number],
-    };
-  }, [wall, wallHeight]);
+    const rects = subtractOpeningsFromRect(
+      coverageStartMm,
+      0,
+      coverageEndMm - coverageStartMm,
+      wallHeight,
+      openings,
+    );
+
+    return rects.map((r, i) => ({
+      key: `vapor-piece-${i}`,
+      pos: [(r.x + r.w / 2) * MM, (r.y + r.h / 2) * MM, zPos] as [
+        number,
+        number,
+        number,
+      ],
+      size: [r.w * MM, r.h * MM, barrierThickness] as [number, number, number],
+    }));
+  }, [wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -1952,22 +2144,24 @@ function WallVaporBarrier({
 
   return (
     <group position={position} rotation={[0, rotationY, 0]}>
-      <group position={barrierMesh.pos}>
-        <mesh renderOrder={1}>
-          <boxGeometry args={barrierMesh.size} />
-          <meshStandardMaterial
-            color="#72c2ff"
-            transparent
-            opacity={0.4}
-            roughness={0.9}
-            metalness={0}
-          />
-        </mesh>
-        <lineSegments>
-          <edgesGeometry args={[new THREE.BoxGeometry(...barrierMesh.size)]} />
-          <lineBasicMaterial color="#72c2ff" linewidth={1} />
-        </lineSegments>
-      </group>
+      {barrierPieces.map((piece) => (
+        <group key={piece.key} position={piece.pos}>
+          <mesh renderOrder={1}>
+            <boxGeometry args={piece.size} />
+            <meshStandardMaterial
+              color="#72c2ff"
+              transparent
+              opacity={0.4}
+              roughness={0.9}
+              metalness={0}
+            />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(...piece.size)]} />
+            <lineBasicMaterial color="#72c2ff" linewidth={1} />
+          </lineSegments>
+        </group>
+      ))}
     </group>
   );
 }
@@ -1976,9 +2170,11 @@ function WallVaporBarrier({
 function WallOsbBoards({
   wall,
   wallHeight,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
+  openings: WallOpening[];
 }) {
   const osbTexture = useMemo(() => getOsbTexture(), []);
 
@@ -2006,16 +2202,22 @@ function WallOsbBoards({
       while (xStart < coverageEnd - 0.001) {
         const boardWidth = Math.min(OSB_BOARD_WIDTH, coverageEnd - xStart);
 
-        result.push({
-          key: `osb-${rowIndex}-${colIndex}`,
-          pos: [
-            (xStart + boardWidth / 2) * MM,
-            (yStart + boardHeight / 2) * MM,
-            zCenter,
-          ],
-          size: [boardWidth * MM, boardHeight * MM, boardThicknessM],
-          color: (rowIndex + colIndex) % 2 === 0 ? "#f1dfc2" : "#e7d2b0",
-        });
+        const pieces = subtractOpeningsFromRect(
+          xStart,
+          yStart,
+          boardWidth,
+          boardHeight,
+          openings,
+        );
+        for (let pi = 0; pi < pieces.length; pi++) {
+          const p = pieces[pi];
+          result.push({
+            key: `osb-${rowIndex}-${colIndex}-${pi}`,
+            pos: [(p.x + p.w / 2) * MM, (p.y + p.h / 2) * MM, zCenter],
+            size: [p.w * MM, p.h * MM, boardThicknessM],
+            color: (rowIndex + colIndex + pi) % 2 === 0 ? "#f1dfc2" : "#e7d2b0",
+          });
+        }
 
         xStart += OSB_BOARD_WIDTH;
         colIndex += 1;
@@ -2026,7 +2228,7 @@ function WallOsbBoards({
     }
 
     return result;
-  }, [wall, wallHeight]);
+  }, [wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -2067,9 +2269,11 @@ function WallOsbBoards({
 function WallDrywallBoards({
   wall,
   wallHeight,
+  openings,
 }: {
   wall: Wall;
   wallHeight: number;
+  openings: WallOpening[];
 }) {
   const boards = useMemo(() => {
     const result: {
@@ -2093,16 +2297,22 @@ function WallDrywallBoards({
       while (xStart < coverageEnd - 0.001) {
         const boardWidth = Math.min(DRYWALL_BOARD_WIDTH, coverageEnd - xStart);
 
-        result.push({
-          key: `drywall-${rowIndex}-${colIndex}`,
-          pos: [
-            (xStart + boardWidth / 2) * MM,
-            (yStart + boardHeight / 2) * MM,
-            0,
-          ],
-          size: [boardWidth * MM, boardHeight * MM, boardThicknessM],
-          color: (rowIndex + colIndex) % 2 === 0 ? "#f4f1ea" : "#ece7de",
-        });
+        const pieces = subtractOpeningsFromRect(
+          xStart,
+          yStart,
+          boardWidth,
+          boardHeight,
+          openings,
+        );
+        for (let pi = 0; pi < pieces.length; pi++) {
+          const p = pieces[pi];
+          result.push({
+            key: `drywall-${rowIndex}-${colIndex}-${pi}`,
+            pos: [(p.x + p.w / 2) * MM, (p.y + p.h / 2) * MM, 0],
+            size: [p.w * MM, p.h * MM, boardThicknessM],
+            color: (rowIndex + colIndex + pi) % 2 === 0 ? "#f4f1ea" : "#ece7de",
+          });
+        }
 
         xStart += DRYWALL_BOARD_WIDTH;
         colIndex += 1;
@@ -2113,7 +2323,7 @@ function WallDrywallBoards({
     }
 
     return result;
-  }, [wall, wallHeight]);
+  }, [wall, wallHeight, openings]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -2456,6 +2666,284 @@ function StudDimensions({ layout }: { layout: WallLayout }) {
   );
 }
 
+/** Visual outline and distance labels for a wall opening */
+function WallOpeningVisual({
+  wall,
+  wallHeight,
+  opening,
+  isSelected,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  opening: WallOpening;
+  isSelected: boolean;
+}) {
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  const outlineColor = isSelected ? "#22d3ee" : "#f59e0b";
+  const oX = opening.left * MM;
+  const oY = opening.bottom * MM;
+  const oW = opening.width * MM;
+  const oH = opening.height * MM;
+  const zOffset = -(wall.thickness * MM) / 2 - 0.015;
+
+  const leftDist = opening.left;
+  const rightDist = wall.effectiveLength - opening.left - opening.width;
+  const bottomDist = opening.bottom;
+  const topDist = wallHeight - opening.bottom - opening.height;
+
+  const outlineGeo = useMemo(() => {
+    const points = [
+      new THREE.Vector3(oX, oY, zOffset),
+      new THREE.Vector3(oX + oW, oY, zOffset),
+      new THREE.Vector3(oX + oW, oY + oH, zOffset),
+      new THREE.Vector3(oX, oY + oH, zOffset),
+      new THREE.Vector3(oX, oY, zOffset),
+    ];
+    return new THREE.BufferGeometry().setFromPoints(points);
+  }, [oX, oY, oW, oH, zOffset]);
+
+  const labelZ = zOffset - 0.01;
+  const labelFontSize = 0.055;
+
+  const outlineLine = useMemo(() => {
+    const mat = new THREE.LineBasicMaterial({
+      color: outlineColor,
+      linewidth: 2,
+    });
+    return new THREE.Line(outlineGeo, mat);
+  }, [outlineGeo, outlineColor]);
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {/* Opening outline */}
+      <primitive object={outlineLine} />
+
+      {/* Semi-transparent fill */}
+      <mesh position={[oX + oW / 2, oY + oH / 2, zOffset + 0.001]}>
+        <planeGeometry args={[oW, oH]} />
+        <meshBasicMaterial
+          color={isSelected ? "#22d3ee" : "#f59e0b"}
+          transparent
+          opacity={0.08}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      {/* Size label at center */}
+      <Text
+        position={[oX + oW / 2, oY + oH / 2, labelZ]}
+        fontSize={0.06}
+        color={outlineColor}
+        anchorX="center"
+        anchorY="middle"
+        depthOffset={-1}
+        rotation={[0, Math.PI, 0]}
+      >
+        {`${Math.round(opening.width / 100)}×${Math.round(opening.height / 100)} dm`}
+      </Text>
+
+      {/* Left distance */}
+      {leftDist > 10 && (
+        <Text
+          position={[oX / 2, oY + oH / 2, labelZ]}
+          fontSize={labelFontSize}
+          color="#94a3b8"
+          anchorX="center"
+          anchorY="middle"
+          depthOffset={-1}
+          rotation={[0, Math.PI, 0]}
+        >
+          {`← ${Math.round(leftDist)}`}
+        </Text>
+      )}
+
+      {/* Right distance */}
+      {rightDist > 10 && (
+        <Text
+          position={[
+            ((opening.left + opening.width + wall.effectiveLength) / 2) * MM,
+            oY + oH / 2,
+            labelZ,
+          ]}
+          fontSize={labelFontSize}
+          color="#94a3b8"
+          anchorX="center"
+          anchorY="middle"
+          depthOffset={-1}
+          rotation={[0, Math.PI, 0]}
+        >
+          {`${Math.round(rightDist)} →`}
+        </Text>
+      )}
+
+      {/* Bottom distance */}
+      {bottomDist > 10 && (
+        <Text
+          position={[oX + oW / 2, (opening.bottom / 2) * MM, labelZ]}
+          fontSize={labelFontSize}
+          color="#94a3b8"
+          anchorX="center"
+          anchorY="middle"
+          depthOffset={-1}
+          rotation={[0, Math.PI, 0]}
+        >
+          {`↓ ${Math.round(bottomDist)}`}
+        </Text>
+      )}
+
+      {/* Top distance */}
+      {topDist > 10 && (
+        <Text
+          position={[
+            oX + oW / 2,
+            ((opening.bottom + opening.height + wallHeight) / 2) * MM,
+            labelZ,
+          ]}
+          fontSize={labelFontSize}
+          color="#94a3b8"
+          anchorX="center"
+          anchorY="middle"
+          depthOffset={-1}
+          rotation={[0, Math.PI, 0]}
+        >
+          {`${Math.round(topDist)} ↑`}
+        </Text>
+      )}
+    </group>
+  );
+}
+
+/** Drag interaction layer for wall openings */
+function WallOpeningDragLayer({
+  wall,
+  wallHeight,
+  openings,
+  onOpeningDrag,
+  onOpeningAdd,
+  onOpeningSelect,
+  controlsRef,
+}: {
+  wall: Wall;
+  wallHeight: number;
+  openings: WallOpening[];
+  onOpeningDrag: (openingId: string, left: number, bottom: number) => void;
+  onOpeningAdd: (wallId: string, x: number, y: number) => void;
+  onOpeningSelect: (openingId: string | null) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  controlsRef: React.RefObject<any>;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const dragRef = useRef<{
+    id: string;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
+
+  const { position, rotationY } = useMemo(() => {
+    const q = wall.quad;
+    const px = ((q.outerStart.x + q.innerStart.x) / 2) * MM;
+    const pz = -((q.outerStart.y + q.innerStart.y) / 2) * MM;
+    return {
+      position: [px, 0, pz] as [number, number, number],
+      rotationY: wall.angle,
+    };
+  }, [wall]);
+
+  const handlePointerDown = useCallback(
+    (e: ThreeEvent<PointerEvent>) => {
+      e.stopPropagation();
+      if (!groupRef.current) return;
+      const local = groupRef.current.worldToLocal(e.point.clone());
+      const wallX = local.x / MM;
+      const wallY = local.y / MM;
+
+      for (const opening of openings) {
+        if (
+          wallX >= opening.left &&
+          wallX <= opening.left + opening.width &&
+          wallY >= opening.bottom &&
+          wallY <= opening.bottom + opening.height
+        ) {
+          dragRef.current = {
+            id: opening.id,
+            offsetX: wallX - opening.left,
+            offsetY: wallY - opening.bottom,
+          };
+          onOpeningSelect(opening.id);
+          if (controlsRef.current) controlsRef.current.enabled = false;
+          (e.nativeEvent.target as Element | null)?.setPointerCapture?.(
+            e.pointerId,
+          );
+          return;
+        }
+      }
+      onOpeningAdd(wall.id, wallX, wallY);
+    },
+    [openings, onOpeningSelect, onOpeningAdd, wall.id, controlsRef],
+  );
+
+  const handlePointerMove = useCallback(
+    (e: ThreeEvent<PointerEvent>) => {
+      if (!dragRef.current || !groupRef.current) return;
+      e.stopPropagation();
+      const local = groupRef.current.worldToLocal(e.point.clone());
+      const wallX = local.x / MM;
+      const wallY = local.y / MM;
+      const opening = openings.find((o) => o.id === dragRef.current!.id);
+      if (!opening) return;
+
+      const newLeft = Math.max(
+        0,
+        Math.min(
+          wallX - dragRef.current.offsetX,
+          wall.effectiveLength - opening.width,
+        ),
+      );
+      const newBottom = Math.max(
+        0,
+        Math.min(wallY - dragRef.current.offsetY, wallHeight - opening.height),
+      );
+      onOpeningDrag(dragRef.current.id, newLeft, newBottom);
+    },
+    [openings, wall.effectiveLength, wallHeight, onOpeningDrag],
+  );
+
+  const handlePointerUp = useCallback(() => {
+    dragRef.current = null;
+    if (controlsRef.current) controlsRef.current.enabled = true;
+  }, [controlsRef]);
+
+  const zPos = -(wall.thickness * MM) / 2 - 0.012;
+
+  return (
+    <group ref={groupRef} position={position} rotation={[0, rotationY, 0]}>
+      <mesh
+        position={[
+          (wall.effectiveLength * MM) / 2,
+          (wallHeight * MM) / 2,
+          zPos,
+        ]}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+      >
+        <planeGeometry args={[wall.effectiveLength * MM, wallHeight * MM]} />
+        <meshBasicMaterial transparent opacity={0} side={THREE.DoubleSide} />
+      </mesh>
+    </group>
+  );
+}
+
 /** The complete 3D model of a WallLayout */
 function WallLayoutModel({
   framingLayout,
@@ -2481,6 +2969,13 @@ function WallLayoutModel({
   showLabels,
   showCorners,
   showStudDimensions,
+  wallOpenings,
+  selectedOpeningId,
+  onOpeningDrag,
+  onOpeningAdd,
+  onOpeningSelect,
+  controlsRef,
+  showOpenings,
 }: {
   framingLayout: WallLayout;
   installationLayout: WallLayout | null;
@@ -2505,6 +3000,14 @@ function WallLayoutModel({
   showLabels: boolean;
   showCorners: boolean;
   showStudDimensions: boolean;
+  wallOpenings: Record<string, WallOpening[]>;
+  selectedOpeningId: string | null;
+  onOpeningDrag: (openingId: string, left: number, bottom: number) => void;
+  onOpeningAdd: (wallId: string, x: number, y: number) => void;
+  onOpeningSelect: (openingId: string | null) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  controlsRef: React.RefObject<any>;
+  showOpenings: boolean;
 }) {
   return (
     <group>
@@ -2517,6 +3020,7 @@ function WallLayoutModel({
             wall={w}
             wallHeight={wallHeight}
             showVerticalTopPlate={showVerticalTopPlate}
+            openings={wallOpenings[w.id] || []}
           />
         ) : (
           <WallSurface
@@ -2536,6 +3040,7 @@ function WallLayoutModel({
             wall={w}
             wallHeight={wallHeight}
             showVerticalTopPlate={showVerticalTopPlate}
+            openings={wallOpenings[w.id] || []}
           />
         ))}
 
@@ -2546,6 +3051,7 @@ function WallLayoutModel({
             key={`wrap-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
+            openings={wallOpenings[w.id] || []}
           />
         ))}
 
@@ -2565,6 +3071,7 @@ function WallLayoutModel({
             wall={w}
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
+            openings={wallOpenings[w.id] || []}
           />
         ))}
 
@@ -2575,6 +3082,7 @@ function WallLayoutModel({
             wall={w}
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
+            openings={wallOpenings[w.id] || []}
           />
         ))}
 
@@ -2586,6 +3094,7 @@ function WallLayoutModel({
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
             showPrimedWhite={showPrimedWhiteExteriorPanel}
+            openings={wallOpenings[w.id] || []}
           />
         ))}
 
@@ -2597,6 +3106,7 @@ function WallLayoutModel({
             wallHeight={wallHeight}
             outsideInsulation={outsideInsulation}
             showPrimedWhite={showPrimedWhiteExteriorPanel}
+            openings={wallOpenings[w.id] || []}
           />
         ))}
 
@@ -2607,6 +3117,7 @@ function WallLayoutModel({
             key={`vapor-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
+            openings={wallOpenings[w.id] || []}
           />
         ))}
 
@@ -2621,24 +3132,31 @@ function WallLayoutModel({
             wallHeight={wallHeight}
             thickness={installationLayer}
             maxStudLength={installationLayerStudLength}
+            openings={wallOpenings[framingLayout.walls[index]?.id] || []}
           />
         ))}
 
       {showFraming &&
         showOsb &&
         osbLayout &&
-        osbLayout.walls.map((w) => (
-          <WallOsbBoards key={`osb-${w.id}`} wall={w} wallHeight={wallHeight} />
+        osbLayout.walls.map((w, index) => (
+          <WallOsbBoards
+            key={`osb-${w.id}`}
+            wall={w}
+            wallHeight={wallHeight}
+            openings={wallOpenings[framingLayout.walls[index]?.id] || []}
+          />
         ))}
 
       {showFraming &&
         showDrywall &&
         drywallLayout &&
-        drywallLayout.walls.map((w) => (
+        drywallLayout.walls.map((w, index) => (
           <WallDrywallBoards
             key={`drywall-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
+            openings={wallOpenings[framingLayout.walls[index]?.id] || []}
           />
         ))}
 
@@ -2649,6 +3167,7 @@ function WallLayoutModel({
             wall={w}
             wallHeight={wallHeight}
             thickness={outsideInsulation}
+            openings={wallOpenings[w.id] || []}
           />
         ))}
 
@@ -2667,6 +3186,31 @@ function WallLayoutModel({
       {showStudDimensions && showFraming && (
         <StudDimensions layout={framingLayout} />
       )}
+
+      {/* Opening visuals and drag layers */}
+      {showOpenings &&
+        framingLayout.walls.map((w) => (
+          <group key={`openings-${w.id}`}>
+            {(wallOpenings[w.id] || []).map((opening) => (
+              <WallOpeningVisual
+                key={opening.id}
+                wall={w}
+                wallHeight={wallHeight}
+                opening={opening}
+                isSelected={selectedOpeningId === opening.id}
+              />
+            ))}
+            <WallOpeningDragLayer
+              wall={w}
+              wallHeight={wallHeight}
+              openings={wallOpenings[w.id] || []}
+              onOpeningDrag={onOpeningDrag}
+              onOpeningAdd={onOpeningAdd}
+              onOpeningSelect={onOpeningSelect}
+              controlsRef={controlsRef}
+            />
+          </group>
+        ))}
     </group>
   );
 }
@@ -2701,6 +3245,18 @@ export default function WallLayoutScene() {
   const [showStudDimensions, setShowStudDimensions] = useState(true);
   const [showVerticalTopPlate, setShowVerticalTopPlate] = useState(false);
   const [showCavityInsulation, setShowCavityInsulation] = useState(false);
+  const [showOpenings, setShowOpenings] = useState(false);
+  const [wallOpenings, setWallOpenings] = useState<
+    Record<string, WallOpening[]>
+  >({});
+  const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(
+    null,
+  );
+  const [newOpeningWidthDm, setNewOpeningWidthDm] = useState(9);
+  const [newOpeningHeightDm, setNewOpeningHeightDm] = useState(21);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const controlsRef = useRef<any>(null);
+  const openingIdCounter = useRef(0);
   const [cameraView, setCameraView] = useState<{
     key: number;
     position: [number, number, number];
@@ -2797,6 +3353,60 @@ export default function WallLayoutScene() {
     cy = (cy / corners.length) * MM;
     return [cx, 1, -cy] as [number, number, number];
   }, [layout]);
+
+  // Opening callbacks
+  const handleOpeningAdd = useCallback(
+    (wallId: string, x: number, y: number) => {
+      const w = newOpeningWidthDm * 100; // dm → mm
+      const h = newOpeningHeightDm * 100;
+      const wall = layout.walls.find((wl) => wl.id === wallId);
+      if (!wall) return;
+      const left = Math.max(0, Math.min(x - w / 2, wall.effectiveLength - w));
+      const bottom = Math.max(0, Math.min(y - h / 2, wallHeight - h));
+      const id = `op-${++openingIdCounter.current}`;
+      setWallOpenings((prev) => ({
+        ...prev,
+        [wallId]: [
+          ...(prev[wallId] || []),
+          { id, left, bottom, width: w, height: h },
+        ],
+      }));
+      setSelectedOpeningId(id);
+    },
+    [newOpeningWidthDm, newOpeningHeightDm, layout.walls, wallHeight],
+  );
+
+  const handleOpeningDrag = useCallback(
+    (openingId: string, left: number, bottom: number) => {
+      setWallOpenings((prev) => {
+        const next = { ...prev };
+        for (const wallId of Object.keys(next)) {
+          next[wallId] = next[wallId].map((o) =>
+            o.id === openingId ? { ...o, left, bottom } : o,
+          );
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleOpeningSelect = useCallback((id: string | null) => {
+    setSelectedOpeningId(id);
+  }, []);
+
+  const handleOpeningRemove = useCallback(() => {
+    if (!selectedOpeningId) return;
+    setWallOpenings((prev) => {
+      const next = { ...prev };
+      for (const wallId of Object.keys(next)) {
+        next[wallId] = next[wallId].filter((o) => o.id !== selectedOpeningId);
+        if (next[wallId].length === 0) delete next[wallId];
+      }
+      return next;
+    });
+    setSelectedOpeningId(null);
+  }, [selectedOpeningId]);
 
   return (
     <div className="flex flex-col lg:flex-row h-full w-full bg-zinc-900">
@@ -3056,6 +3666,11 @@ export default function WallLayoutScene() {
                   checked: showStudDimensions,
                   toggle: () => setShowStudDimensions((v) => !v),
                 },
+                {
+                  label: "Öppningar",
+                  checked: showOpenings,
+                  toggle: () => setShowOpenings((v) => !v),
+                },
               ].map((opt) => (
                 <label
                   key={opt.label}
@@ -3072,6 +3687,90 @@ export default function WallLayoutScene() {
               ))}
             </div>
           </div>
+
+          {/* Openings controls */}
+          {showOpenings && (
+            <div className="p-3 bg-zinc-700/30 rounded-lg space-y-3">
+              <h3 className="text-sm font-medium text-zinc-300">
+                Öppningar (dörrar/fönster)
+              </h3>
+              <p className="text-xs text-zinc-500">
+                Klicka på en vägg i 3D-vyn för att lägga till en öppning. Dra
+                för att flytta.
+              </p>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="block text-xs text-zinc-400 mb-1">
+                    Bredd (dm)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={newOpeningWidthDm}
+                    onChange={(e) =>
+                      setNewOpeningWidthDm(
+                        Math.max(1, Math.min(50, Number(e.target.value))),
+                      )
+                    }
+                    className="w-full px-2 py-1 bg-zinc-700 text-zinc-200 text-sm rounded border border-zinc-600 focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-xs text-zinc-400 mb-1">
+                    Höjd (dm)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={40}
+                    value={newOpeningHeightDm}
+                    onChange={(e) =>
+                      setNewOpeningHeightDm(
+                        Math.max(1, Math.min(40, Number(e.target.value))),
+                      )
+                    }
+                    className="w-full px-2 py-1 bg-zinc-700 text-zinc-200 text-sm rounded border border-zinc-600 focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div className="text-xs text-zinc-500">
+                = {newOpeningWidthDm * 100} × {newOpeningHeightDm * 100} mm
+              </div>
+
+              {selectedOpeningId && (
+                <button
+                  onClick={handleOpeningRemove}
+                  className="w-full px-3 py-1.5 text-xs font-medium rounded bg-red-600/80 text-white hover:bg-red-500 transition-colors"
+                >
+                  Ta bort vald öppning
+                </button>
+              )}
+
+              {/* List of all openings per wall */}
+              {Object.keys(wallOpenings).length > 0 && (
+                <div className="space-y-1 pt-1 border-t border-zinc-600">
+                  {Object.entries(wallOpenings).map(([wallId, ops]) =>
+                    ops.map((op) => (
+                      <button
+                        key={op.id}
+                        onClick={() => setSelectedOpeningId(op.id)}
+                        className={`w-full text-left px-2 py-1 rounded text-xs transition-colors ${
+                          op.id === selectedOpeningId
+                            ? "bg-cyan-500/20 text-cyan-300"
+                            : "bg-zinc-700/50 text-zinc-400 hover:bg-zinc-600/50"
+                        }`}
+                      >
+                        {wallId}: {Math.round(op.width / 100)}×
+                        {Math.round(op.height / 100)} dm @ {Math.round(op.left)}
+                        mm
+                      </button>
+                    )),
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Layout info */}
           <div className="p-3 bg-zinc-700/30 rounded-lg space-y-1">
@@ -3173,6 +3872,7 @@ export default function WallLayoutScene() {
             fov={50}
           />
           <OrbitControls
+            ref={controlsRef}
             key={`controls-${cameraView.key}`}
             enableDamping
             dampingFactor={0.1}
@@ -3221,6 +3921,13 @@ export default function WallLayoutScene() {
             showLabels={showLabels}
             showCorners={showCorners}
             showStudDimensions={showStudDimensions}
+            wallOpenings={wallOpenings}
+            selectedOpeningId={selectedOpeningId}
+            onOpeningDrag={handleOpeningDrag}
+            onOpeningAdd={handleOpeningAdd}
+            onOpeningSelect={handleOpeningSelect}
+            controlsRef={controlsRef}
+            showOpenings={showOpenings}
           />
 
           <Grid

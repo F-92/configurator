@@ -152,6 +152,20 @@ export interface WallLayoutOptions {
   jointOverrides?: Record<number, JointType>;
 }
 
+/** A rectangular opening (window, door, or custom hole) in a wall */
+export interface WallOpening {
+  /** Unique identifier */
+  id: string;
+  /** Distance from effective wall start to left edge of opening (mm) */
+  left: number;
+  /** Distance from floor to bottom edge of opening (mm) */
+  bottom: number;
+  /** Opening width (mm) */
+  width: number;
+  /** Opening height (mm) */
+  height: number;
+}
+
 /** The complete resolved wall layout */
 export interface WallLayoutData {
   /** All walls in perimeter order */

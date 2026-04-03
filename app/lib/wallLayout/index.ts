@@ -27,7 +27,18 @@ export type {
   Wall,
   WallLayoutOptions,
   WallLayoutData,
+  WallOpening,
 } from "./types";
+
+// Opening utilities
+export {
+  computeOpeningFraming,
+  subtractOpeningsFromRect,
+  mapOpeningsToWall,
+  splitHorizontalSpan,
+  splitVerticalSpan,
+} from "./openings";
+export type { OpeningFramingMember, OpeningFramingResult } from "./openings";
 
 // Geometry utilities (for advanced users)
 export {
