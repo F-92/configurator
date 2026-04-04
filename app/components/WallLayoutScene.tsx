@@ -9,6 +9,7 @@ import {
   Text,
 } from "@react-three/drei";
 import * as THREE from "three";
+import { Brush, Evaluator, SUBTRACTION } from "three-bvh-csg";
 import {
   WallLayout,
   rectangleLayout,
@@ -74,6 +75,8 @@ const YTTERPANEL_FALSE_FACE_ANGLE = 25; // degrees from the front face on both p
 const YTTERPANEL_FACE_CHAMFER = 2; // mm visible chamfer on both front board edges
 const YTTERPANEL_SEAM_SHADOW_WIDTH = 3; // mm subtle visible reveal between boards
 const YTTERPANEL_SEAM_SHADOW_DEPTH = 0.8; // mm thin shadow strip kept flush to the face
+const PANEL_MIN_REMAINDER = 70; // mm minimum remaining panel strip near an opening
+const PANEL_CUTOUT_BLEED = 2; // mm extend edge-aligned cutouts past the board to avoid tiny CSG slivers
 const MUSBAND_HEIGHT = 20; // mm starter leg height against the wall
 const MUSBAND_THICKNESS = 1; // mm sheet metal thickness
 const MUSBAND_PROJECTION = 50; // mm outward projection from the wall via the comb teeth
@@ -353,12 +356,19 @@ function getSubtlePaintOpacity(seed: string) {
   return 0.9 + getDeterministicUnitValue(`${seed}-paint-opacity`) * 0.06;
 }
 
+type PanelBoardEdgeStyle = "lap" | "face" | "cut";
+
+const panelCsgEvaluator = new Evaluator();
+panelCsgEvaluator.useGroups = false;
+
 function createYtterpanelBoardGeometry({
   boardWidth,
   wallHeight,
   thickness,
   leftLapWidth,
   rightLapWidth,
+  leftEdgeStyle = leftLapWidth > 0 ? "lap" : "face",
+  rightEdgeStyle = rightLapWidth > 0 ? "lap" : "face",
   rabbetDepth,
   falseFaceAngle,
   faceChamfer,
@@ -368,6 +378,8 @@ function createYtterpanelBoardGeometry({
   thickness: number;
   leftLapWidth: number;
   rightLapWidth: number;
+  leftEdgeStyle?: PanelBoardEdgeStyle;
+  rightEdgeStyle?: PanelBoardEdgeStyle;
   rabbetDepth: number;
   falseFaceAngle: number;
   faceChamfer: number;
@@ -411,21 +423,27 @@ function createYtterpanelBoardGeometry({
 
   const profile = new THREE.Shape();
 
-  if (clampedLeftLap > 0) {
+  if (leftEdgeStyle === "lap" && clampedLeftLap > 0) {
     profile.moveTo(0, clampedRabbetDepth);
     profile.lineTo(leftSlopeTopX, chamferBaseY);
     profile.lineTo(leftFaceStartX, clampedThickness);
+  } else if (leftEdgeStyle === "cut") {
+    profile.moveTo(0, 0);
+    profile.lineTo(0, clampedThickness);
   } else {
     profile.moveTo(0, 0);
     profile.lineTo(0, chamferBaseY);
     profile.lineTo(clampedFaceChamfer, clampedThickness);
   }
 
-  if (clampedRightLap > 0) {
+  if (rightEdgeStyle === "lap" && clampedRightLap > 0) {
     profile.lineTo(rightFaceEndX, clampedThickness);
     profile.lineTo(rightSlopeTopX, chamferBaseY);
     profile.lineTo(frontRightX, clampedRabbetDepth);
     profile.lineTo(clampedWidth, clampedRabbetDepth);
+    profile.lineTo(clampedWidth, 0);
+  } else if (rightEdgeStyle === "cut") {
+    profile.lineTo(clampedWidth, clampedThickness);
     profile.lineTo(clampedWidth, 0);
   } else {
     profile.lineTo(clampedWidth - clampedFaceChamfer, clampedThickness);
@@ -433,7 +451,7 @@ function createYtterpanelBoardGeometry({
     profile.lineTo(clampedWidth, 0);
   }
 
-  if (clampedLeftLap > 0) {
+  if (leftEdgeStyle === "lap" && clampedLeftLap > 0) {
     profile.lineTo(clampedLeftLap, 0);
     profile.lineTo(clampedLeftLap, clampedThickness - clampedRabbetDepth);
   } else {
@@ -458,6 +476,8 @@ function createLiggandeYtterpanelBoardGeometry({
   thickness,
   leftLapWidth,
   rightLapWidth,
+  leftEdgeStyle,
+  rightEdgeStyle,
   rabbetDepth,
   falseFaceAngle,
   faceChamfer,
@@ -467,6 +487,8 @@ function createLiggandeYtterpanelBoardGeometry({
   thickness: number;
   leftLapWidth: number;
   rightLapWidth: number;
+  leftEdgeStyle?: PanelBoardEdgeStyle;
+  rightEdgeStyle?: PanelBoardEdgeStyle;
   rabbetDepth: number;
   falseFaceAngle: number;
   faceChamfer: number;
@@ -477,6 +499,8 @@ function createLiggandeYtterpanelBoardGeometry({
     thickness,
     leftLapWidth,
     rightLapWidth,
+    leftEdgeStyle,
+    rightEdgeStyle,
     rabbetDepth,
     falseFaceAngle,
     faceChamfer,
@@ -486,6 +510,98 @@ function createLiggandeYtterpanelBoardGeometry({
   geometry.translate(wallLength, 0, 0);
 
   return geometry;
+}
+
+function getBoardOpeningCutouts(
+  boardLeft: number,
+  boardBottom: number,
+  boardWidth: number,
+  boardHeight: number,
+  openings: WallOpening[],
+) {
+  const cutouts: { x: number; y: number; width: number; height: number }[] = [];
+  const boardRight = boardLeft + boardWidth;
+  const boardTop = boardBottom + boardHeight;
+
+  for (const opening of openings) {
+    let cutLeft = Math.max(boardLeft, opening.left);
+    let cutRight = Math.min(boardRight, opening.left + opening.width);
+    let cutBottom = Math.max(boardBottom, opening.bottom);
+    let cutTop = Math.min(boardTop, opening.bottom + opening.height);
+
+    if (cutRight - cutLeft <= 0.5 || cutTop - cutBottom <= 0.5) continue;
+
+    if (cutLeft - boardLeft < PANEL_MIN_REMAINDER) {
+      cutLeft = boardLeft;
+    }
+    if (boardRight - cutRight < PANEL_MIN_REMAINDER) {
+      cutRight = boardRight;
+    }
+    if (cutBottom - boardBottom < PANEL_MIN_REMAINDER) {
+      cutBottom = boardBottom;
+    }
+    if (boardTop - cutTop < PANEL_MIN_REMAINDER) {
+      cutTop = boardTop;
+    }
+
+    if (cutLeft <= boardLeft + 0.5) {
+      cutLeft -= PANEL_CUTOUT_BLEED;
+    }
+    if (cutRight >= boardRight - 0.5) {
+      cutRight += PANEL_CUTOUT_BLEED;
+    }
+    if (cutBottom <= boardBottom + 0.5) {
+      cutBottom -= PANEL_CUTOUT_BLEED;
+    }
+    if (cutTop >= boardTop - 0.5) {
+      cutTop += PANEL_CUTOUT_BLEED;
+    }
+
+    cutouts.push({
+      x: (cutLeft - boardLeft) * MM,
+      y: (cutBottom - boardBottom) * MM,
+      width: (cutRight - cutLeft) * MM,
+      height: (cutTop - cutBottom) * MM,
+    });
+  }
+
+  return cutouts;
+}
+
+function createBoardGeometryWithCutouts(
+  geometry: THREE.BufferGeometry,
+  thickness: number,
+  cutouts: { x: number; y: number; width: number; height: number }[],
+) {
+  if (cutouts.length === 0) return geometry;
+
+  geometry.clearGroups();
+
+  let result = new Brush(geometry);
+  result.updateMatrixWorld();
+
+  for (let index = 0; index < cutouts.length; index++) {
+    const cutout = cutouts[index];
+    const cutterGeometry = new THREE.BoxGeometry(
+      Math.max(cutout.width, 0.001),
+      Math.max(cutout.height, 0.001),
+      thickness + 2 * MM,
+    );
+    cutterGeometry.translate(
+      cutout.x + cutout.width / 2,
+      cutout.y + cutout.height / 2,
+      -thickness / 2,
+    );
+    cutterGeometry.clearGroups();
+
+    const cutter = new Brush(cutterGeometry);
+    cutter.updateMatrixWorld();
+    result = panelCsgEvaluator.evaluate(result, cutter, SUBTRACTION);
+    result.updateMatrixWorld();
+  }
+
+  result.geometry.computeVertexNormals();
+  return result.geometry;
 }
 
 const PRESETS: LayoutPreset[] = [
@@ -1981,7 +2097,6 @@ function WallStandingExteriorPanel({
   const panelData = useMemo(() => {
     const edge = layerEdges.panel;
     const { coverageStart, coverageEnd } = edge;
-    const wallHeightM = wallHeight * MM;
     const panelThickness = YTTERPANEL_THICKNESS * MM;
     const boardWidth = YTTERPANEL_BOARD_WIDTH * MM;
     const visibleWidth = YTTERPANEL_VISIBLE_WIDTH * MM;
@@ -1996,7 +2111,7 @@ function WallStandingExteriorPanel({
     const boards: {
       key: string;
       pos: [number, number, number];
-      geometry: THREE.ExtrudeGeometry;
+      geometry: THREE.BufferGeometry;
       color: string;
       roughness: number;
       texture: THREE.Texture;
@@ -2036,27 +2151,21 @@ function WallStandingExteriorPanel({
       ) {
         const boardLeftMm = coverageStart + boardStart / MM;
         const boardSeed = `panel-${wall.id}-${index}`;
-
-        // Split vertically around openings — each span is a profiled segment
-        const spans = splitVerticalSpan(
-          0,
-          wallHeight,
+        const cutouts = getBoardOpeningCutouts(
           boardLeftMm,
+          0,
           actualBoardWidth / MM,
+          wallHeight,
           openings,
         );
 
-        for (let si = 0; si < spans.length; si++) {
-          const span = spans[si];
-          const segH = (span.end - span.start) * MM;
-          const segY = span.start * MM;
-
-          boards.push({
-            key: `panel-${index}-${si}`,
-            pos: [boardStart, segY, panelBackZ],
-            geometry: createYtterpanelBoardGeometry({
+        boards.push({
+          key: `panel-${index}`,
+          pos: [boardStart, 0, panelBackZ],
+          geometry: createBoardGeometryWithCutouts(
+            createYtterpanelBoardGeometry({
               boardWidth: actualBoardWidth,
-              wallHeight: segH,
+              wallHeight: wallHeight * MM,
               thickness: panelThickness,
               leftLapWidth,
               rightLapWidth,
@@ -2064,17 +2173,19 @@ function WallStandingExteriorPanel({
               falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
               faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
             }),
-            color: getSubtleWoodColor(boardSeed),
-            roughness: getSubtleWoodRoughness(boardSeed),
-            texture: cloneTextureWithLengthwiseOffset(
-              pineTexture,
-              boardSeed,
-              "y",
-            ),
-            paintColor: getSubtlePaintColor(boardSeed),
-            paintOpacity: getSubtlePaintOpacity(boardSeed),
-          });
-        }
+            panelThickness,
+            cutouts,
+          ),
+          color: getSubtleWoodColor(boardSeed),
+          roughness: getSubtleWoodRoughness(boardSeed),
+          texture: cloneTextureWithLengthwiseOffset(
+            pineTexture,
+            boardSeed,
+            "y",
+          ),
+          paintColor: getSubtlePaintColor(boardSeed),
+          paintOpacity: getSubtlePaintOpacity(boardSeed),
+        });
 
         if (!isFirst) {
           // Seam shadows also split around openings
@@ -2209,13 +2320,12 @@ function WallHorizontalExteriorPanel({
     const rabbetDepth = Math.min(YTTERPANEL_RABBET_DEPTH * MM, panelThickness);
     const seamShadowWidth = YTTERPANEL_SEAM_SHADOW_WIDTH * MM;
     const seamShadowDepth = YTTERPANEL_SEAM_SHADOW_DEPTH * MM;
-    const totalLength = Math.max(coverageEnd - coverageStart, 0.001) * MM;
     const panelBackZ = edge.innerFaceZ;
 
     const boards: {
       key: string;
       pos: [number, number, number];
-      geometry: THREE.ExtrudeGeometry;
+      geometry: THREE.BufferGeometry;
       color: string;
       roughness: number;
       texture: THREE.Texture;
@@ -2256,27 +2366,21 @@ function WallHorizontalExteriorPanel({
       ) {
         const boardBottomMm = boardStart / MM;
         const boardSeed = `horizontal-panel-${wall.id}-${index}`;
-
-        // Split horizontally around openings — each span is a profiled segment
-        const spans = splitHorizontalSpan(
+        const cutouts = getBoardOpeningCutouts(
           coverageStart,
-          coverageEnd,
           boardBottomMm,
+          coverageEnd - coverageStart,
           actualBoardHeight / MM,
           openings,
         );
 
-        for (let si = 0; si < spans.length; si++) {
-          const span = spans[si];
-          const segLen = (span.end - span.start) * MM;
-          const segX = (span.start - coverageStart) * MM;
-
-          boards.push({
-            key: `horizontal-panel-${index}-${si}`,
-            pos: [segX, boardStart, panelBackZ],
-            geometry: createLiggandeYtterpanelBoardGeometry({
+        boards.push({
+          key: `horizontal-panel-${index}`,
+          pos: [0, boardStart, panelBackZ],
+          geometry: createBoardGeometryWithCutouts(
+            createLiggandeYtterpanelBoardGeometry({
               boardHeight: actualBoardHeight,
-              wallLength: segLen,
+              wallLength: (coverageEnd - coverageStart) * MM,
               thickness: panelThickness,
               leftLapWidth: lowerLapWidth,
               rightLapWidth: upperFalseWidth,
@@ -2284,17 +2388,19 @@ function WallHorizontalExteriorPanel({
               falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
               faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
             }),
-            color: getSubtleWoodColor(boardSeed),
-            roughness: getSubtleWoodRoughness(boardSeed),
-            texture: cloneTextureWithLengthwiseOffset(
-              pineTexture,
-              boardSeed,
-              "x",
-            ),
-            paintColor: getSubtlePaintColor(boardSeed),
-            paintOpacity: getSubtlePaintOpacity(boardSeed),
-          });
-        }
+            panelThickness,
+            cutouts,
+          ),
+          color: getSubtleWoodColor(boardSeed),
+          roughness: getSubtleWoodRoughness(boardSeed),
+          texture: cloneTextureWithLengthwiseOffset(
+            pineTexture,
+            boardSeed,
+            "x",
+          ),
+          paintColor: getSubtlePaintColor(boardSeed),
+          paintOpacity: getSubtlePaintOpacity(boardSeed),
+        });
 
         if (!isFirst) {
           // Seam shadows also split around openings
