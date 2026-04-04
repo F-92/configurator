@@ -50,6 +50,9 @@ const INSTALLATION_LAYER_OPTIONS = [0, 45, 70] as const;
 const INSTALLATION_LAYER_STUD_LENGTH_OPTIONS = [
   2400, 3000, 3600, 4200,
 ] as const;
+const PANEL_BOARD_LENGTH_OPTIONS = [
+  3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400,
+] as const;
 const OSB_BOARD_WIDTH = 1200; // mm
 const OSB_BOARD_HEIGHT = 2700; // mm
 const OSB_BOARD_THICKNESS = 11; // mm
@@ -602,6 +605,79 @@ function createBoardGeometryWithCutouts(
 
   result.geometry.computeVertexNormals();
   return result.geometry;
+}
+
+function getSupportAlignedBoardSegments(
+  totalLength: number,
+  boardLength: number,
+  staggerOffset: number,
+  jointSupports: number[],
+) {
+  if (totalLength <= 0.001) return [] as { start: number; length: number }[];
+
+  const segments: { start: number; length: number }[] = [];
+  const clampedBoardLength = Math.max(boardLength, 1);
+  const clampedOffset = Math.max(
+    0,
+    Math.min(staggerOffset, clampedBoardLength - 1),
+  );
+
+  const supports = jointSupports
+    .filter(
+      (support) =>
+        support > PANEL_MIN_REMAINDER &&
+        support < totalLength - PANEL_MIN_REMAINDER,
+    )
+    .sort((a, b) => a - b);
+
+  let cursor = 0;
+  let useStaggerOffset = clampedOffset > PANEL_MIN_REMAINDER;
+
+  while (cursor < totalLength - 0.001) {
+    const remaining = totalLength - cursor;
+    if (remaining <= clampedBoardLength + PANEL_MIN_REMAINDER) {
+      segments.push({ start: cursor, length: remaining });
+      break;
+    }
+
+    const desiredBreak =
+      cursor + (useStaggerOffset ? clampedOffset : clampedBoardLength);
+    const candidates = supports.filter(
+      (support) =>
+        support > cursor + PANEL_MIN_REMAINDER &&
+        support < totalLength - PANEL_MIN_REMAINDER,
+    );
+
+    if (candidates.length === 0) {
+      segments.push({ start: cursor, length: remaining });
+      break;
+    }
+
+    let nextBreak = candidates[0];
+    let bestDistance = Math.abs(candidates[0] - desiredBreak);
+    for (let index = 1; index < candidates.length; index++) {
+      const candidate = candidates[index];
+      const distance = Math.abs(candidate - desiredBreak);
+      if (
+        distance < bestDistance - 0.001 ||
+        (Math.abs(distance - bestDistance) <= 0.001 && candidate > nextBreak)
+      ) {
+        nextBreak = candidate;
+        bestDistance = distance;
+      }
+    }
+
+    if (nextBreak <= cursor + PANEL_MIN_REMAINDER) {
+      segments.push({ start: cursor, length: remaining });
+      break;
+    }
+
+    segments.push({ start: cursor, length: nextBreak - cursor });
+    cursor = nextBreak;
+    useStaggerOffset = false;
+  }
+
+  return segments;
 }
 
 const PRESETS: LayoutPreset[] = [
@@ -2024,11 +2100,12 @@ function WallVerticalSpiklakt({
       }
     };
 
-    // Place vertical battens at stud positions so they align with the framing
-    const retraction = wall.startCorner.retraction;
+    // Place vertical battens at stud positions in the wall's local effective coordinates.
+    // stud.centerPosition is already relative to the effective wall start, so adding
+    // the corner retraction shifts butt walls twice and misaligns side walls.
     const studs = wall.studLayout.studs;
     for (let i = 0; i < studs.length; i++) {
-      const studXMm = retraction + studs[i].centerPosition;
+      const studXMm = studs[i].centerPosition;
       // Only place batten if the stud falls within the layer coverage
       if (studXMm >= coverageStart && studXMm <= coverageEnd) {
         addColumnAtX(studXMm * MM, i);
@@ -2082,12 +2159,14 @@ function WallVerticalSpiklakt({
 function WallStandingExteriorPanel({
   wall,
   wallHeight,
+  boardLength,
   layerEdges,
   showPrimedWhite,
   openings,
 }: {
   wall: Wall;
   wallHeight: number;
+  boardLength: number;
   layerEdges: WallLayerEdges;
   showPrimedWhite: boolean;
   openings: WallOpening[];
@@ -2107,6 +2186,26 @@ function WallStandingExteriorPanel({
     const seamShadowDepth = YTTERPANEL_SEAM_SHADOW_DEPTH * MM;
     const totalLength = Math.max(coverageEnd - coverageStart, 0.001) * MM;
     const panelBackZ = edge.innerFaceZ;
+    const standingJointSupports: number[] = [];
+
+    let supportY = SPIKLAKT_HEIGHT / 2;
+    let supportIndex = 0;
+    while (supportY < wallHeight - SPIKLAKT_HEIGHT / 2 - 0.001) {
+      standingJointSupports.push(supportY);
+      supportY += SPIKLAKT_SPACING;
+      supportIndex += 1;
+    }
+
+    const topSupportY = Math.max(
+      SPIKLAKT_HEIGHT / 2,
+      wallHeight - SPIKLAKT_HEIGHT / 2,
+    );
+    if (
+      supportIndex === 0 ||
+      supportY - SPIKLAKT_SPACING < topSupportY - 0.001
+    ) {
+      standingJointSupports.push(topSupportY);
+    }
 
     const boards: {
       key: string;
@@ -2150,42 +2249,57 @@ function WallStandingExteriorPanel({
         (centerWidth > 0 || leftLapWidth > 0 || rightLapWidth > 0)
       ) {
         const boardLeftMm = coverageStart + boardStart / MM;
-        const boardSeed = `panel-${wall.id}-${index}`;
-        const cutouts = getBoardOpeningCutouts(
-          boardLeftMm,
-          0,
-          actualBoardWidth / MM,
+        const staggerOffset = index % 2 === 1 ? boardLength / 2 : 0;
+        const segments = getSupportAlignedBoardSegments(
           wallHeight,
-          openings,
+          boardLength,
+          staggerOffset,
+          standingJointSupports,
         );
 
-        boards.push({
-          key: `panel-${index}`,
-          pos: [boardStart, 0, panelBackZ],
-          geometry: createBoardGeometryWithCutouts(
-            createYtterpanelBoardGeometry({
-              boardWidth: actualBoardWidth,
-              wallHeight: wallHeight * MM,
-              thickness: panelThickness,
-              leftLapWidth,
-              rightLapWidth,
-              rabbetDepth,
-              falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
-              faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
-            }),
-            panelThickness,
-            cutouts,
-          ),
-          color: getSubtleWoodColor(boardSeed),
-          roughness: getSubtleWoodRoughness(boardSeed),
-          texture: cloneTextureWithLengthwiseOffset(
-            pineTexture,
-            boardSeed,
-            "y",
-          ),
-          paintColor: getSubtlePaintColor(boardSeed),
-          paintOpacity: getSubtlePaintOpacity(boardSeed),
-        });
+        for (
+          let segmentIndex = 0;
+          segmentIndex < segments.length;
+          segmentIndex++
+        ) {
+          const segment = segments[segmentIndex];
+          const boardSeed = `panel-${wall.id}-${index}-${segmentIndex}`;
+          const cutouts = getBoardOpeningCutouts(
+            boardLeftMm,
+            segment.start,
+            actualBoardWidth / MM,
+            segment.length,
+            openings,
+          );
+
+          boards.push({
+            key: `panel-${index}-${segmentIndex}`,
+            pos: [boardStart, segment.start * MM, panelBackZ],
+            geometry: createBoardGeometryWithCutouts(
+              createYtterpanelBoardGeometry({
+                boardWidth: actualBoardWidth,
+                wallHeight: segment.length * MM,
+                thickness: panelThickness,
+                leftLapWidth,
+                rightLapWidth,
+                rabbetDepth,
+                falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
+                faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
+              }),
+              panelThickness,
+              cutouts,
+            ),
+            color: getSubtleWoodColor(boardSeed),
+            roughness: getSubtleWoodRoughness(boardSeed),
+            texture: cloneTextureWithLengthwiseOffset(
+              pineTexture,
+              boardSeed,
+              "y",
+            ),
+            paintColor: getSubtlePaintColor(boardSeed),
+            paintOpacity: getSubtlePaintOpacity(boardSeed),
+          });
+        }
 
         if (!isFirst) {
           // Seam shadows also split around openings
@@ -2226,7 +2340,7 @@ function WallStandingExteriorPanel({
       boards,
       seamShadows,
     };
-  }, [openings, layerEdges, pineTexture, wall, wallHeight]);
+  }, [boardLength, openings, layerEdges, pineTexture, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -2296,12 +2410,14 @@ function WallStandingExteriorPanel({
 function WallHorizontalExteriorPanel({
   wall,
   wallHeight,
+  boardLength,
   layerEdges,
   showPrimedWhite,
   openings,
 }: {
   wall: Wall;
   wallHeight: number;
+  boardLength: number;
   layerEdges: WallLayerEdges;
   showPrimedWhite: boolean;
   openings: WallOpening[];
@@ -2321,6 +2437,12 @@ function WallHorizontalExteriorPanel({
     const seamShadowWidth = YTTERPANEL_SEAM_SHADOW_WIDTH * MM;
     const seamShadowDepth = YTTERPANEL_SEAM_SHADOW_DEPTH * MM;
     const panelBackZ = edge.innerFaceZ;
+    const horizontalJointSupports = wall.studLayout.studs
+      .map((stud) => stud.centerPosition - coverageStart)
+      .filter(
+        (support) =>
+          support >= 0.001 && support <= coverageEnd - coverageStart - 0.001,
+      );
 
     const boards: {
       key: string;
@@ -2365,42 +2487,58 @@ function WallHorizontalExteriorPanel({
         (centerWidth > 0 || lowerLapWidth > 0 || upperFalseWidth > 0)
       ) {
         const boardBottomMm = boardStart / MM;
-        const boardSeed = `horizontal-panel-${wall.id}-${index}`;
-        const cutouts = getBoardOpeningCutouts(
-          coverageStart,
-          boardBottomMm,
+        const staggerOffset = index % 2 === 1 ? boardLength / 2 : 0;
+        const segments = getSupportAlignedBoardSegments(
           coverageEnd - coverageStart,
-          actualBoardHeight / MM,
-          openings,
+          boardLength,
+          staggerOffset,
+          horizontalJointSupports,
         );
 
-        boards.push({
-          key: `horizontal-panel-${index}`,
-          pos: [0, boardStart, panelBackZ],
-          geometry: createBoardGeometryWithCutouts(
-            createLiggandeYtterpanelBoardGeometry({
-              boardHeight: actualBoardHeight,
-              wallLength: (coverageEnd - coverageStart) * MM,
-              thickness: panelThickness,
-              leftLapWidth: lowerLapWidth,
-              rightLapWidth: upperFalseWidth,
-              rabbetDepth,
-              falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
-              faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
-            }),
-            panelThickness,
-            cutouts,
-          ),
-          color: getSubtleWoodColor(boardSeed),
-          roughness: getSubtleWoodRoughness(boardSeed),
-          texture: cloneTextureWithLengthwiseOffset(
-            pineTexture,
-            boardSeed,
-            "x",
-          ),
-          paintColor: getSubtlePaintColor(boardSeed),
-          paintOpacity: getSubtlePaintOpacity(boardSeed),
-        });
+        for (
+          let segmentIndex = 0;
+          segmentIndex < segments.length;
+          segmentIndex++
+        ) {
+          const segment = segments[segmentIndex];
+          const segmentStart = coverageStart + segment.start;
+          const boardSeed = `horizontal-panel-${wall.id}-${index}-${segmentIndex}`;
+          const cutouts = getBoardOpeningCutouts(
+            segmentStart,
+            boardBottomMm,
+            segment.length,
+            actualBoardHeight / MM,
+            openings,
+          );
+
+          boards.push({
+            key: `horizontal-panel-${index}-${segmentIndex}`,
+            pos: [(segmentStart - coverageStart) * MM, boardStart, panelBackZ],
+            geometry: createBoardGeometryWithCutouts(
+              createLiggandeYtterpanelBoardGeometry({
+                boardHeight: actualBoardHeight,
+                wallLength: segment.length * MM,
+                thickness: panelThickness,
+                leftLapWidth: lowerLapWidth,
+                rightLapWidth: upperFalseWidth,
+                rabbetDepth,
+                falseFaceAngle: YTTERPANEL_FALSE_FACE_ANGLE,
+                faceChamfer: YTTERPANEL_FACE_CHAMFER * MM,
+              }),
+              panelThickness,
+              cutouts,
+            ),
+            color: getSubtleWoodColor(boardSeed),
+            roughness: getSubtleWoodRoughness(boardSeed),
+            texture: cloneTextureWithLengthwiseOffset(
+              pineTexture,
+              boardSeed,
+              "x",
+            ),
+            paintColor: getSubtlePaintColor(boardSeed),
+            paintOpacity: getSubtlePaintOpacity(boardSeed),
+          });
+        }
 
         if (!isFirst) {
           // Seam shadows also split around openings
@@ -2441,7 +2579,7 @@ function WallHorizontalExteriorPanel({
       boards,
       seamShadows,
     };
-  }, [openings, layerEdges, pineTexture, wall, wallHeight]);
+  }, [boardLength, openings, layerEdges, pineTexture, wall, wallHeight]);
 
   const { position, rotationY } = useMemo(() => {
     const q = wall.quad;
@@ -3524,6 +3662,7 @@ function WallLayoutModel({
   outsideDrywall,
   installationLayer,
   installationLayerStudLength,
+  panelBoardLength,
   showOsb,
   showDrywall,
   showOutsideDrywall,
@@ -3559,6 +3698,7 @@ function WallLayoutModel({
   outsideDrywall: number;
   installationLayer: number;
   installationLayerStudLength: number;
+  panelBoardLength: number;
   showOsb: boolean;
   showDrywall: boolean;
   showOutsideDrywall: boolean;
@@ -3697,6 +3837,7 @@ function WallLayoutModel({
             key={`ytterpanel-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
+            boardLength={panelBoardLength}
             layerEdges={layerEdgesMap[w.id]}
             showPrimedWhite={showPrimedWhiteExteriorPanel}
             openings={wallOpenings[w.id] || []}
@@ -3709,6 +3850,7 @@ function WallLayoutModel({
             key={`horizontal-ytterpanel-${w.id}`}
             wall={w}
             wallHeight={wallHeight}
+            boardLength={panelBoardLength}
             layerEdges={layerEdgesMap[w.id]}
             showPrimedWhite={showPrimedWhiteExteriorPanel}
             openings={wallOpenings[w.id] || []}
@@ -3868,6 +4010,7 @@ export default function WallLayoutScene() {
     installationLayerStudLengthIndex,
     setInstallationLayerStudLengthIndex,
   ] = useState(INSTALLATION_LAYER_STUD_LENGTH_OPTIONS.length - 1);
+  const [panelBoardLengthIndex, setPanelBoardLengthIndex] = useState(0);
   const [wallHeight, setWallHeight] = useState(WALL_HEIGHT);
   const [showFraming, setShowFraming] = useState(true);
   const [showHouseWrap, setShowHouseWrap] = useState(false);
@@ -3913,6 +4056,7 @@ export default function WallLayoutScene() {
   const installationLayer = INSTALLATION_LAYER_OPTIONS[installationLayerIndex];
   const installationLayerStudLength =
     INSTALLATION_LAYER_STUD_LENGTH_OPTIONS[installationLayerStudLengthIndex];
+  const panelBoardLength = PANEL_BOARD_LENGTH_OPTIONS[panelBoardLengthIndex];
   const outsideDrywall = showOutsideDrywall ? OUTSIDE_DRYWALL_THICKNESS : 0;
 
   const baseOuterCorners = useMemo(() => {
@@ -4274,6 +4418,26 @@ export default function WallLayoutScene() {
             </div>
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-zinc-300 mb-1">
+              Panellängd: {panelBoardLength} mm
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={PANEL_BOARD_LENGTH_OPTIONS.length - 1}
+              step={1}
+              value={panelBoardLengthIndex}
+              onChange={(e) => setPanelBoardLengthIndex(Number(e.target.value))}
+              className="w-full accent-amber-400"
+            />
+            <div className="flex justify-between text-xs text-zinc-500 mt-1">
+              {PANEL_BOARD_LENGTH_OPTIONS.map((value) => (
+                <span key={value}>{value}</span>
+              ))}
+            </div>
+          </div>
+
           {/* Wall height */}
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-1">
@@ -4510,7 +4674,7 @@ export default function WallLayoutScene() {
                 falsvinkel, {YTTERPANEL_FACE_CHAMFER} mm fasade kanter och{" "}
                 {(showHorizontalExteriorPanel ? "vertikal" : "horisontell") +
                   " spikläkt "}
-                {SPIKLAKT_THICKNESS} mm
+                {SPIKLAKT_THICKNESS} mm. Vald panellängd {panelBoardLength} mm
               </div>
               <div>
                 Panelriktning:{" "}
@@ -4632,6 +4796,7 @@ export default function WallLayoutScene() {
             outsideDrywall={outsideDrywall}
             installationLayer={installationLayer}
             installationLayerStudLength={installationLayerStudLength}
+            panelBoardLength={panelBoardLength}
             showOsb={showOsb}
             showDrywall={showDrywall}
             showOutsideDrywall={showOutsideDrywall}
