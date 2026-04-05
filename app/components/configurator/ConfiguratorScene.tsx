@@ -2,6 +2,7 @@
 
 import React, { useMemo } from "react";
 import type { Wall } from "../../lib/configurator";
+import type { WallOpening } from "../../lib/configurator";
 import { mapOpeningsToWall } from "../../lib/configurator/openings";
 import type { ParametricWall } from "../../lib/configurator/parametric";
 import type { ConfiguratorSceneProps } from "./types";
@@ -39,6 +40,7 @@ import {
   WallOutsideDrywall,
   WallSurface,
 } from "./StructuralRenderers";
+import { WallWindows } from "./WindowRenderers";
 
 export function ConfiguratorScene({
   layouts: {
@@ -76,6 +78,7 @@ export function ConfiguratorScene({
   },
   openings: {
     wallOpenings,
+    windowOpeningIds,
     selectedOpeningId,
     onOpeningDrag,
     onOpeningAdd,
@@ -94,6 +97,46 @@ export function ConfiguratorScene({
     }
     return map;
   }, [framingLayout.walls]);
+
+  const outsideInsulationOpeningsByWall = useMemo(() => {
+    const expandedByWall: Record<string, WallOpening[]> = {};
+
+    for (const wall of framingLayout.walls) {
+      const studWidth = wall.studLayout.studs[0]?.width ?? 45;
+      expandedByWall[wall.id] = (wallOpenings[wall.id] || []).map((opening) => {
+        if (!windowOpeningIds[opening.id] || outsideInsulation <= 0) {
+          return opening;
+        }
+
+        const expandedLeft = Math.max(0, opening.left - studWidth);
+        const expandedBottom = Math.max(0, opening.bottom - studWidth);
+        const expandedRight = Math.min(
+          wall.effectiveLength,
+          opening.left + opening.width + studWidth,
+        );
+        const expandedTop = Math.min(
+          wallHeight,
+          opening.bottom + opening.height + studWidth,
+        );
+
+        return {
+          ...opening,
+          left: expandedLeft,
+          bottom: expandedBottom,
+          width: expandedRight - expandedLeft,
+          height: expandedTop - expandedBottom,
+        };
+      });
+    }
+
+    return expandedByWall;
+  }, [
+    framingLayout.walls,
+    outsideInsulation,
+    wallHeight,
+    wallOpenings,
+    windowOpeningIds,
+  ]);
 
   return (
     <group>
@@ -312,9 +355,21 @@ export function ConfiguratorScene({
             wallHeight={wallHeight}
             thickness={outsideInsulation}
             layerEdges={layerEdgesMap[wall.id]}
-            openings={wallOpenings[wall.id] || []}
+            openings={outsideInsulationOpeningsByWall[wall.id] || []}
           />
         ))}
+
+      {framingLayout.walls.map((wall) => (
+        <WallWindows
+          key={`windows-${wall.id}`}
+          wall={wall}
+          openings={(wallOpenings[wall.id] || []).filter(
+            (opening) => windowOpeningIds[opening.id],
+          )}
+          layerEdges={layerEdgesMap[wall.id]}
+          showPrimedWhite={showPrimedWhiteExteriorPanel}
+        />
+      ))}
 
       {showLabels && (
         <WallLabels

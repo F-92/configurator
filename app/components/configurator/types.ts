@@ -3,6 +3,8 @@ import type { WallOpening } from "../../lib/configurator";
 import type { LayoutLike } from "../../lib/configuratorScene/constants";
 
 export type OpeningsByWall = Record<string, WallOpening[]>;
+export type OpeningKind = "opening" | "window";
+export type WindowOpeningIds = Record<string, true>;
 
 export interface SidebarGeometryControls {
   presetIndex: number;
@@ -68,12 +70,15 @@ export interface SidebarVisibilityControls {
 export interface SidebarOpeningControls {
   showOpenings: boolean;
   setShowOpenings: (value: boolean) => void;
+  newOpeningKind: OpeningKind;
+  setNewOpeningKind: (value: OpeningKind) => void;
   newOpeningWidthDm: number;
   setNewOpeningWidthDm: (value: number) => void;
   newOpeningHeightDm: number;
   setNewOpeningHeightDm: (value: number) => void;
   selectedOpeningId: string | null;
   wallOpenings: OpeningsByWall;
+  windowOpeningIds: WindowOpeningIds;
   onOpeningRemove: () => void;
   onOpeningSelect: (id: string | null) => void;
 }
@@ -124,6 +129,7 @@ export interface SceneVisibility {
 
 export interface SceneOpeningState {
   wallOpenings: OpeningsByWall;
+  windowOpeningIds: WindowOpeningIds;
   selectedOpeningId: string | null;
   showOpenings: boolean;
   onOpeningDrag: (openingId: string, left: number, bottom: number) => void;

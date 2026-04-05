@@ -100,12 +100,15 @@ export function ConfiguratorSidebar({
   openings: {
     showOpenings,
     setShowOpenings,
+    newOpeningKind,
+    setNewOpeningKind,
     newOpeningWidthDm,
     setNewOpeningWidthDm,
     newOpeningHeightDm,
     setNewOpeningHeightDm,
     selectedOpeningId,
     wallOpenings,
+    windowOpeningIds,
     onOpeningRemove,
     onOpeningSelect,
   },
@@ -394,13 +397,33 @@ export function ConfiguratorSidebar({
 
         {showOpenings && (
           <div className="p-3 bg-zinc-700/30 rounded-lg space-y-3">
-            <h3 className="text-sm font-medium text-zinc-300">
-              Openings (doors/windows)
-            </h3>
+            <h3 className="text-sm font-medium text-zinc-300">Openings</h3>
             <p className="text-xs text-zinc-500">
-              Click a wall in the 3D view to add an opening. Drag to reposition
-              it.
+              Choose whether the next wall click creates a plain opening or a
+              window opening. Drag to reposition it.
             </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setNewOpeningKind("opening")}
+                className={`px-3 py-2 rounded text-xs transition-colors ${
+                  newOpeningKind === "opening"
+                    ? "bg-amber-400/90 text-zinc-900 font-medium"
+                    : "bg-zinc-700/50 text-zinc-300 hover:bg-zinc-600/50"
+                }`}
+              >
+                Plain opening
+              </button>
+              <button
+                onClick={() => setNewOpeningKind("window")}
+                className={`px-3 py-2 rounded text-xs transition-colors ${
+                  newOpeningKind === "window"
+                    ? "bg-cyan-400/90 text-zinc-900 font-medium"
+                    : "bg-zinc-700/50 text-zinc-300 hover:bg-zinc-600/50"
+                }`}
+              >
+                Window
+              </button>
+            </div>
             <div className="flex gap-2">
               <div className="flex-1">
                 <label className="block text-xs text-zinc-400 mb-1">
@@ -463,6 +486,15 @@ export function ConfiguratorSidebar({
                           : "bg-zinc-700/50 text-zinc-400 hover:bg-zinc-600/50"
                       }`}
                     >
+                      <span
+                        className={`inline-block mr-1 rounded px-1 py-0.5 text-[10px] font-medium ${
+                          windowOpeningIds[opening.id]
+                            ? "bg-cyan-500/20 text-cyan-300"
+                            : "bg-zinc-600/60 text-zinc-300"
+                        }`}
+                      >
+                        {windowOpeningIds[opening.id] ? "window" : "opening"}
+                      </span>
                       {wallId}: {Math.round(opening.width / 100)}x
                       {Math.round(opening.height / 100)} dm @{" "}
                       {Math.round(opening.left)} mm

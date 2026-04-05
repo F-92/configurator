@@ -3,15 +3,18 @@
 import { useCallback, useRef, useState } from "react";
 import type { WallOpening } from "../../lib/configurator";
 import type { LayoutLike } from "../../lib/configuratorScene/constants";
+import type { OpeningKind, WindowOpeningIds } from "./types";
 
 export function useOpeningState({
   layout,
   wallHeight,
+  newOpeningKind,
   newOpeningWidthDm,
   newOpeningHeightDm,
 }: {
   layout: LayoutLike;
   wallHeight: number;
+  newOpeningKind: OpeningKind;
   newOpeningWidthDm: number;
   newOpeningHeightDm: number;
 }) {
@@ -20,6 +23,9 @@ export function useOpeningState({
   >({});
   const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(
     null,
+  );
+  const [windowOpeningIds, setWindowOpeningIds] = useState<WindowOpeningIds>(
+    {},
   );
   const openingIdCounter = useRef(0);
 
@@ -47,9 +53,19 @@ export function useOpeningState({
           { id, left, bottom, width: openingWidth, height: openingHeight },
         ],
       }));
+      setWindowOpeningIds((previous) => {
+        if (newOpeningKind !== "window") return previous;
+        return { ...previous, [id]: true };
+      });
       setSelectedOpeningId(id);
     },
-    [newOpeningWidthDm, newOpeningHeightDm, layout.walls, wallHeight],
+    [
+      newOpeningHeightDm,
+      newOpeningKind,
+      newOpeningWidthDm,
+      layout.walls,
+      wallHeight,
+    ],
   );
 
   const handleOpeningDrag = useCallback(
@@ -88,11 +104,18 @@ export function useOpeningState({
 
       return next;
     });
+    setWindowOpeningIds((previous) => {
+      if (!previous[selectedOpeningId]) return previous;
+      const next = { ...previous };
+      delete next[selectedOpeningId];
+      return next;
+    });
     setSelectedOpeningId(null);
   }, [selectedOpeningId]);
 
   return {
     wallOpenings,
+    windowOpeningIds,
     selectedOpeningId,
     handleOpeningAdd,
     handleOpeningDrag,

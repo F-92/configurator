@@ -13,6 +13,7 @@ import type {
 import { useCameraState } from "./useCameraState";
 import { useConfiguratorLayouts } from "./useConfiguratorLayouts";
 import { useOpeningState } from "./useOpeningState";
+import type { OpeningKind } from "./types";
 
 export function useConfiguratorState() {
   const [presetIndex, setPresetIndex] = useState(0);
@@ -46,6 +47,7 @@ export function useConfiguratorState() {
   const [showVerticalTopPlate, setShowVerticalTopPlate] = useState(false);
   const [showCavityInsulation, setShowCavityInsulation] = useState(false);
   const [showOpenings, setShowOpenings] = useState(false);
+  const [newOpeningKind, setNewOpeningKind] = useState<OpeningKind>("opening");
   const [newOpeningWidthDm, setNewOpeningWidthDm] = useState(9);
   const [newOpeningHeightDm, setNewOpeningHeightDm] = useState(21);
   const {
@@ -75,6 +77,7 @@ export function useConfiguratorState() {
 
   const {
     wallOpenings,
+    windowOpeningIds,
     selectedOpeningId,
     handleOpeningAdd,
     handleOpeningDrag,
@@ -83,6 +86,7 @@ export function useConfiguratorState() {
   } = useOpeningState({
     layout,
     wallHeight,
+    newOpeningKind,
     newOpeningWidthDm,
     newOpeningHeightDm,
   });
@@ -154,12 +158,15 @@ export function useConfiguratorState() {
     openings: {
       showOpenings,
       setShowOpenings,
+      newOpeningKind,
+      setNewOpeningKind,
       newOpeningWidthDm,
       setNewOpeningWidthDm,
       newOpeningHeightDm,
       setNewOpeningHeightDm,
       selectedOpeningId,
       wallOpenings,
+      windowOpeningIds,
       onOpeningRemove: handleOpeningRemove,
       onOpeningSelect: handleOpeningSelect,
     },
@@ -209,6 +216,7 @@ export function useConfiguratorState() {
     },
     openings: {
       wallOpenings,
+      windowOpeningIds,
       selectedOpeningId,
       onOpeningDrag: handleOpeningDrag,
       onOpeningAdd: handleOpeningAdd,
