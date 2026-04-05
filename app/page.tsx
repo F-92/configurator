@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { Suspense } from "react";
 
-const WallLayoutScene = dynamic(() => import("./components/WallLayoutScene"), {
+const Configurator = dynamic(() => import("./components/Configurator"), {
   ssr: false,
 });
 
@@ -19,7 +19,7 @@ export default function Home() {
         </div>
       }
     >
-      <WallLayoutScene />
+      <Configurator />
     </Suspense>
   );
 }

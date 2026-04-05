@@ -1,17 +1,14 @@
 "use client";
 
 import { useMemo } from "react";
-import * as THREE from "three";
-import { HouseConfig, RoofType } from "../lib/types";
+import { HouseConfig } from "../lib/types";
 import { getPineTexture } from "../lib/woodTexture";
 
 // Timber dimensions for trusses
 const CHORD_W = 0.045; // 45mm
 const CHORD_H = 0.195; // 195mm (larger for trusses)
-const WEB_W = 0.045;
 const WEB_H = 0.095; // 95mm for web members
 const TRUSS_SPACING = 1.2; // 1200mm on center (typical Swedish truss spacing)
-const RAFTER_DEPTH = 0.145;
 
 interface TrussProfile {
   members: {
@@ -291,7 +288,6 @@ function generateShedTruss(
 function createMemberGeometry(
   start: [number, number],
   end: [number, number],
-  thickness: number,
 ): { position: [number, number, number]; rotation: number; length: number } {
   const dx = end[0] - start[0];
   const dy = end[1] - start[1];
@@ -380,7 +376,6 @@ export function RoofTrusses({ config }: RoofTrussesProps) {
           const { position, rotation, length } = createMemberGeometry(
             member.start,
             member.end,
-            member.thickness,
           );
 
           return (

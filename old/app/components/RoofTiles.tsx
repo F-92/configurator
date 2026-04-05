@@ -275,7 +275,7 @@ function SlopeDimensions({
           const elements: React.ReactNode[] = [];
           // Show up to 3 representative gaps
           const maxShow = Math.min(3, battens.length - 1);
-          for (let i = 0; i < battens.length - 1; i++) {
+          for (let i = 0; i < maxShow; i++) {
             const z0 = battens[i].z;
             const z1 = battens[i + 1].z;
             const cc = z1 - z0;
@@ -333,7 +333,7 @@ function SlopeDimensions({
           const elements: React.ReactNode[] = [];
           // Show up to 3 representative gaps
           const maxShow = Math.min(3, stroBattens.length - 1);
-          for (let i = 0; i < stroBattens.length - 1; i++) {
+          for (let i = 0; i < maxShow; i++) {
             const x0 = stroBattens[i];
             const x1 = stroBattens[i + 1];
             const cc = x1 - x0;

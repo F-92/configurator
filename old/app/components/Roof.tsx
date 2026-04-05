@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import * as THREE from "three";
-import { HouseConfig, RoofType } from "../lib/types";
+import { HouseConfig } from "../lib/types";
 
 interface RoofProps {
   config: HouseConfig;
@@ -25,7 +25,6 @@ function createGableRoof(
 
   // Left slope
   const leftGeo = new THREE.BufferGeometry();
-  const slopeLength = hw / Math.cos(pitchRad);
   const leftVertices = new Float32Array([
     -hw,
     eaveY,

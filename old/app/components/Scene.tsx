@@ -2,12 +2,7 @@
 
 import { useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
-import {
-  OrbitControls,
-  PerspectiveCamera,
-  Environment,
-  Grid,
-} from "@react-three/drei";
+import { OrbitControls, PerspectiveCamera, Grid } from "@react-three/drei";
 import * as THREE from "three";
 import { useHouseStore } from "../lib/store";
 import { HouseConfig, WallName } from "../lib/types";

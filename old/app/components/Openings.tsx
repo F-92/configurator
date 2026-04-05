@@ -44,7 +44,7 @@ function getWallTransform(
 }
 
 export function WindowMeshes({ config }: WindowMeshesProps) {
-  const { width, depth, wallHeight, windows, trimColor } = config;
+  const { width, depth, windows, trimColor } = config;
 
   return (
     <group>

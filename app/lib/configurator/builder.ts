@@ -132,7 +132,7 @@ export class TraceBuilder {
   }
 
   /**
-   * Close the loop back to the starting point and build the ConfiguratorLayout.
+  * Close the loop back to the starting point and build the ConfiguratorLayout.
    *
    * If the last recorded corner is not the starting point, an
    * implicit closing wall is added.

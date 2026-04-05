@@ -4,7 +4,6 @@ import {
   LIMITS,
   WindowConfig,
   DoorConfig,
-  HouseExtension,
 } from "./types";
 
 function clamp(value: number, min: number, max: number): number {

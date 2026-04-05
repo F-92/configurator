@@ -1,8 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import * as THREE from "three";
-import { HouseConfig, WindowConfig, DoorConfig, WallName } from "../lib/types";
+import { HouseConfig, WallName } from "../lib/types";
 import { getPineTexture } from "../lib/woodTexture";
 import { WallCut } from "./Walls";
 
