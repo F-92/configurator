@@ -3,7 +3,7 @@ import type {
   TrussMember,
   TrussGeometry,
   Support,
-  PointLoad,
+  LoadCase,
   TrussInput,
 } from "./types";
 
@@ -92,48 +92,37 @@ export function generateFinkGeometry(
 }
 
 /**
- * Compute point loads at top chord nodes from distributed area loads.
- * Dead load acts on the slope surface; snow load acts on plan projection.
- * Both are multiplied by truss spacing to get line loads, then distributed to nodes.
+ * Compute structural loads for the frame-truss model.
+ * Dead load acts on the roof slope surface; snow load acts on plan projection.
+ * Both are converted to uniformly distributed vertical loads on the top chord
+ * frame elements, then resolved into each member local axis system.
  *
  * @param factored - if true, apply ULS factors (1.35G + 1.5Q); if false, use characteristic loads (SLS)
  */
-export function computeLoads(
-  input: TrussInput,
-  factored: boolean,
-): PointLoad[] {
-  const { span, pitch, spacing, deadLoad, snowLoad } = input;
+export function computeLoads(input: TrussInput, factored: boolean): LoadCase {
+  const { pitch, spacing, deadLoad, snowLoad } = input;
   const pitchRad = (pitch * Math.PI) / 180;
-
-  // Half-span on slope
-  const halfSlopeLength = span / 2 / Math.cos(pitchRad);
 
   // Dead load is treated on the roof slope.
   const deadLineLoad = deadLoad * spacing; // kN/m along slope
   // Snow load is treated on horizontal projection without cos(pitch) reduction.
-  const snowLineLoad = snowLoad * spacing; // kN/m on horizontal projection
+  const snowLineLoad = snowLoad * spacing; // kN/m on plan projection
 
   // Apply ULS load factors or use characteristic (SLS)
   const gammaG = factored ? 1.35 : 1.0;
   const gammaQ = factored ? 1.5 : 1.0;
 
-  const slopeSegLen = halfSlopeLength / 2; // one top chord segment length on slope
-  const horizontalSegLen = span / 4; // one panel width in horizontal projection
+  const totalVerticalLoad =
+    gammaG * deadLineLoad + gammaQ * snowLineLoad * Math.cos(pitchRad);
+  const qx = -totalVerticalLoad * Math.sin(pitchRad);
+  const qy = -totalVerticalLoad * Math.cos(pitchRad);
 
-  const loadAtSupport =
-    gammaG * deadLineLoad * (slopeSegLen / 2) +
-    gammaQ * snowLineLoad * (horizontalSegLen / 2);
-  const loadAtMid =
-    gammaG * deadLineLoad * slopeSegLen +
-    gammaQ * snowLineLoad * horizontalSegLen;
-
-  const loads: PointLoad[] = [
-    { nodeId: 0, fx: 0, fy: -loadAtSupport },
-    { nodeId: 4, fx: 0, fy: -loadAtMid },
-    { nodeId: 5, fx: 0, fy: -loadAtMid },
-    { nodeId: 6, fx: 0, fy: -loadAtMid },
-    { nodeId: 3, fx: 0, fy: -loadAtSupport },
-  ];
-
-  return loads;
+  return {
+    pointLoads: [],
+    memberLoads: [3, 4, 5, 6].map((memberId) => ({
+      memberId,
+      qx,
+      qy,
+    })),
+  };
 }

@@ -1,7 +1,9 @@
 export { generateFinkGeometry, computeLoads } from "./geometry";
 export { analyzeTruss } from "./analysis";
-export { checkMembers, getEA } from "./design";
+export { checkMembers, getEA, getEI } from "./design";
 export type {
+  DistributedMemberLoad,
+  LoadCase,
   TrussInput,
   TrussNode,
   TrussMember,
@@ -15,7 +17,7 @@ export type {
 import type { TrussInput, TrussDesignResult } from "./types";
 import { generateFinkGeometry, computeLoads } from "./geometry";
 import { analyzeTruss } from "./analysis";
-import { checkMembers, getEA } from "./design";
+import { checkMembers, getEA, getEI } from "./design";
 
 /**
  * Run the full design pipeline:
@@ -29,18 +31,34 @@ export function designTruss(input: TrussInput): TrussDesignResult {
   // Per-member EA based on group-specific timber sizes
   const EA_top = getEA(input.timberWidth, input.topChordHeight);
   const EA_bottom = getEA(input.timberWidth, input.bottomChordHeight);
+  const EI_top = getEI(input.timberWidth, input.topChordHeight);
   const memberEAs = geometry.members.map((m) =>
     m.group === "topChord" ? EA_top : EA_bottom,
+  );
+  const memberEIs = geometry.members.map((m) =>
+    m.group === "topChord" ? EI_top : 0,
   );
 
   // --- ULS: factored loads for strength checks ---
   const ulsLoads = computeLoads(input, true);
-  const ulsResult = analyzeTruss(geometry, ulsLoads, memberEAs);
+  const ulsResult = analyzeTruss(
+    geometry,
+    ulsLoads,
+    memberEAs,
+    memberEIs,
+    input.jointRotationalStiffness,
+  );
   const designChecks = checkMembers(ulsResult.memberResults, input);
 
   // --- SLS: characteristic loads for deflection check ---
   const slsLoads = computeLoads(input, false);
-  const slsResult = analyzeTruss(geometry, slsLoads, memberEAs);
+  const slsResult = analyzeTruss(
+    geometry,
+    slsLoads,
+    memberEAs,
+    memberEIs,
+    input.jointRotationalStiffness,
+  );
   // No bottom chord node at midspan — use max vertical displacement
   // of the two bottom internal nodes (N1 at L/3, N2 at 2L/3).
   // By symmetry they deflect equally; both are ~94% of true midspan value.

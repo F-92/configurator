@@ -39,26 +39,10 @@ function relativeSlenderness(lambda: number): number {
 }
 
 /**
- * Engineering approximation for top-chord panel bending in nail-plated W-trusses.
- *
- * The global truss analysis is axial-only and pin-jointed, so this term is not
- * produced by the stiffness model itself. Instead, a separate empirical factor is
- * fitted to TräGuiden tabell 4.2 to approximate the semi-rigid nail-plate moment
- * redistribution seen in manufactured trusses.
- *
- * This is not a code-derived beam-element model and should not be presented as a
- * first-principles representation of joint stiffness.
- */
-function getTopChordMomentCalibration(span: number, snowLoad: number): number {
-  const factor = 0.85 - 0.06 * (span - 5) - 0.15 * (snowLoad - 1);
-  return Math.max(0.55, Math.min(0.85, factor));
-}
-
-/**
  * Check all members per Eurocode 5.
  * - Bottom chord / web tension: §6.1.2
  * - Web compression: §6.3.2 (axial only)
- * - Top chord: §6.3.2 combined bending + axial compression (eq 6.23/6.24)
+ * - Chord members: §6.3.2 combined bending + axial force where required
  *
  * @param memberResults - axial forces from ULS structural analysis
  * @param input - design input (for timber sizes and loading info)
@@ -74,17 +58,6 @@ export function checkMembers(
   const fc_0_d = (EC5.ksys * EC5.kmod * C24.fc_0_k) / EC5.gamma_M; // MPa
   const fm_d = (EC5.ksys * EC5.kmod * C24.fm_k) / EC5.gamma_M; // MPa
 
-  // Distributed ULS load on rafter for top chord bending calculation
-  // Dead load is per m² of slope surface; snow is used directly on the
-  // horizontal projection line load per the current project assumption.
-  const deadPerRafterM = input.deadLoad * input.spacing; // kN/m along rafter
-  const snowPerRafterM = input.snowLoad * input.spacing; // kN/m
-  const wRafterULS = 1.35 * deadPerRafterM + 1.5 * snowPerRafterM;
-  const momentCalibration = getTopChordMomentCalibration(
-    input.span,
-    input.snowLoad,
-  );
-
   // Top chord lateral bracing: assume battens at ~600mm spacing
   const battenSpacing = 0.6; // metres
 
@@ -94,10 +67,14 @@ export function checkMembers(
     const b = timberWidth; // mm
     const h = heightMm; // mm
     const A_mm2 = b * h;
+    const W_mm3 = (b * h * h) / 6;
     const N = mr.axialForce; // kN
     const isTension = N >= 0;
+    const M_bend = Math.abs(mr.maxAbsMoment);
+    const sigma_m = W_mm3 > 0 ? (M_bend * 1e6) / W_mm3 : 0;
+    const hasBending = M_bend > 1e-6;
 
-    if (isTension) {
+    if (isTension && !hasBending) {
       // Pure tension check: §6.1.2
       const capacity_kN = (ft_0_d * A_mm2) / 1000;
       const utilization = Math.abs(N) / capacity_kN;
@@ -139,7 +116,24 @@ export function checkMembers(
     // Axial compression stress
     const sigma_c = (N_abs * 1000) / A_mm2; // MPa
 
-    if (!isTopChord) {
+    if (isTension) {
+      const utilization = (N_abs * 1000) / (ft_0_d * A_mm2) + sigma_m / fm_d;
+      const capacity_kN = utilization > 0 ? N_abs / utilization : 0;
+      return {
+        memberId: mr.memberId,
+        label: mr.label,
+        group: mr.group,
+        axialForce: N,
+        bendingMoment: M_bend,
+        capacity: capacity_kN,
+        utilization,
+        mode: "combined" as const,
+        buckling: false,
+        pass: utilization <= 1.0,
+      };
+    }
+
+    if (!isTopChord && !hasBending) {
       // Pure compression check for web/bottom chord
       // Web members in nail-plated trusses are restrained out-of-plane
       // by the nail plates and chord connections → use in-plane kc only
@@ -161,19 +155,8 @@ export function checkMembers(
       };
     }
 
-    // --- Top chord: combined bending + axial compression (EC5 §6.3.2) ---
-    // Bending is introduced separately after the pin-jointed global analysis.
-    // We start from the 2-span continuous beam moment M = 9wL²/128 and then
-    // apply an engineering approximation fitted to TräGuiden tabell 4.2.
-    const M_bend =
-      (momentCalibration * (9 * wRafterULS * mr.length * mr.length)) / 128; // kNm
-    const W_mm3 = (b * h * h) / 6; // section modulus, mm³
-    const sigma_m = (M_bend * 1e6) / W_mm3; // MPa
-
-    // EC5 eq 6.23 (in-plane, y-axis): σ_c/(kc_y × fc,0,d) + σ_m/fm,d ≤ 1
+    // --- Chord compression with bending (EC5 §6.3.2) ---
     const util_623 = sigma_c / (kc_y * fc_0_d) + sigma_m / fm_d;
-
-    // EC5 eq 6.24 (out-of-plane, z-axis): σ_c/(kc_z × fc,0,d) + km × σ_m/fm,d ≤ 1
     const util_624 = sigma_c / (kc_z * fc_0_d) + (EC5.km * sigma_m) / fm_d;
 
     const utilization = Math.max(util_623, util_624);
@@ -202,4 +185,15 @@ export function getEA(widthMm: number, heightMm: number): number {
   const A_m2 = (widthMm / 1000) * (heightMm / 1000); // m²
   const E_kPa = C24.E0_mean * 1000; // MPa → kN/m²
   return E_kPa * A_m2; // kN
+}
+
+/**
+ * Return C24 flexural stiffness EI in kNm² for a given cross-section.
+ */
+export function getEI(widthMm: number, heightMm: number): number {
+  const b = widthMm / 1000;
+  const h = heightMm / 1000;
+  const I_m4 = (b * h * h * h) / 12;
+  const E_kNm2 = C24.E0_mean * 1000;
+  return E_kNm2 * I_m4;
 }

@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "calibrate:truss": "npx tsx --tsconfig scripts/tsconfig.json scripts/calibrate-truss.ts",
+    "diagnose:truss": "npx tsx --tsconfig scripts/tsconfig.json scripts/diagnose-truss-case.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

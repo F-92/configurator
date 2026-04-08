@@ -26,6 +26,20 @@ export interface PointLoad {
   nodeId: number;
   fx: number; // kN, horizontal
   fy: number; // kN, vertical (negative = downward)
+  mz?: number; // kNm, nodal moment about z
+}
+
+/** Uniformly distributed member load resolved in the member local axis system */
+export interface DistributedMemberLoad {
+  memberId: number;
+  qx: number; // kN/m in local x
+  qy: number; // kN/m in local y
+}
+
+/** Full load case used by the structural solver */
+export interface LoadCase {
+  pointLoads: PointLoad[];
+  memberLoads: DistributedMemberLoad[];
 }
 
 /** User inputs for the truss design */
@@ -35,6 +49,7 @@ export interface TrussInput {
   spacing: number; // truss c/c spacing in metres (typically 1.2)
   deadLoad: number; // kN/m² on slope (roofing + self-weight)
   snowLoad: number; // kN/m² on plan projection
+  jointRotationalStiffness: number; // kNm/rad at internal nail-plate joints
   timberWidth: number; // mm (e.g. 45), same for all members
   topChordHeight: number; // mm — top chord (överram)
   bottomChordHeight: number; // mm — bottom chord (underram)
@@ -46,7 +61,14 @@ export interface MemberResult {
   label: string;
   group: "topChord" | "bottomChord" | "web";
   length: number; // metres
-  axialForce: number; // kN (positive = tension, negative = compression)
+  axialForce: number; // kN (governing signed axial force, positive = tension)
+  startAxialForce: number; // kN
+  endAxialForce: number; // kN
+  startShearForce: number; // kN
+  endShearForce: number; // kN
+  startMoment: number; // kNm
+  endMoment: number; // kNm
+  maxAbsMoment: number; // kNm
 }
 
 /** Node displacement from analysis */
@@ -54,6 +76,7 @@ export interface NodeDisplacement {
   nodeId: number;
   dx: number; // metres
   dy: number; // metres
+  rotation: number; // radians
 }
 
 /** Full output from the stiffness method */
@@ -86,7 +109,7 @@ export interface TrussGeometry {
 /** Full analysis + design output */
 export interface TrussDesignResult {
   geometry: TrussGeometry;
-  loads: PointLoad[];
+  loads: LoadCase;
   memberResults: MemberResult[];
   designChecks: DesignCheck[];
   totalTimberLength: number; // metres

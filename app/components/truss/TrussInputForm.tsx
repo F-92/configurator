@@ -115,6 +115,20 @@ export default function TrussInputForm({
         step={0.1}
         onChange={(v) => set("spacing", v)}
       />
+      <Field
+        label="Joint rotational stiffness"
+        unit="kNm/rad"
+        value={input.jointRotationalStiffness}
+        min={0}
+        max={1000}
+        step={25}
+        onChange={(v) => set("jointRotationalStiffness", v)}
+      />
+      <p className="-mt-3 text-xs leading-5 text-zinc-500">
+        Default is 0 kNm/rad as a pinned-joint reference. The current solver now
+        uses true member-end rotational springs, but the spring value is not yet
+        calibrated to manufacturer or TräGuiden connection data.
+      </p>
 
       <hr className="border-zinc-800" />
 

@@ -14,7 +14,7 @@ function utilizationColor(u: number): string {
 }
 
 export default function TrussSVG({ result }: TrussSVGProps) {
-  const { geometry, designChecks } = result;
+  const { geometry, designChecks, memberResults } = result;
   const { nodes, members } = geometry;
 
   // Compute bounding box
@@ -38,6 +38,7 @@ export default function TrussSVG({ result }: TrussSVGProps) {
 
   // Build a lookup from memberId to designCheck
   const checkMap = new Map(designChecks.map((c) => [c.memberId, c]));
+  const memberResultMap = new Map(memberResults.map((m) => [m.memberId, m]));
 
   const supportSize = svgH * 0.06;
 
@@ -53,6 +54,7 @@ export default function TrussSVG({ result }: TrussSVGProps) {
           const n1 = nodes[m.startNodeId];
           const n2 = nodes[m.endNodeId];
           const check = checkMap.get(m.id);
+          const memberResult = memberResultMap.get(m.id);
           const color = check ? utilizationColor(check.utilization) : "#71717a";
           const strokeWidth = m.group === "web" ? 0.04 : 0.06;
 
@@ -79,7 +81,7 @@ export default function TrussSVG({ result }: TrussSVGProps) {
               >
                 <title>
                   {check
-                    ? `${m.label}: ${check.axialForce.toFixed(1)} kN (${check.mode})\nUtilization: ${(check.utilization * 100).toFixed(0)}%${check.buckling ? " [buckling]" : ""}\n${check.pass ? "✓ OK" : "✗ FAIL"}`
+                    ? `${m.label}: ${check.axialForce.toFixed(1)} kN (${check.mode})\nMmax: ${memberResult?.maxAbsMoment.toFixed(2) ?? "0.00"} kNm\nUtilization: ${(check.utilization * 100).toFixed(0)}%${check.buckling ? " [buckling]" : ""}\n${check.pass ? "✓ OK" : "✗ FAIL"}`
                     : m.label}
                 </title>
               </line>

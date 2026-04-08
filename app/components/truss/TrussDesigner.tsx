@@ -13,6 +13,7 @@ const DEFAULT_INPUT: TrussInput = {
   spacing: 1.2,
   deadLoad: 0.9,
   snowLoad: 1.5,
+  jointRotationalStiffness: 0,
   timberWidth: 45,
   topChordHeight: 195,
   bottomChordHeight: 170,

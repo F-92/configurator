@@ -30,34 +30,33 @@ export default function TrussResults({
     midspanDeflection,
     deflectionLimit,
     deflectionPass,
+    memberResults,
   } = result;
 
   const pitchRad = (input.pitch * Math.PI) / 180;
   const deadLineLoad = input.deadLoad * input.spacing;
   const snowLineLoad = input.snowLoad * input.spacing;
-  const ulsLineLoad = 1.35 * deadLineLoad + 1.5 * snowLineLoad;
-  const slsLineLoad = deadLineLoad + snowLineLoad;
+  const ulsVerticalLineLoad =
+    1.35 * deadLineLoad + 1.5 * snowLineLoad * Math.cos(pitchRad);
+  const slsVerticalLineLoad = deadLineLoad + snowLineLoad * Math.cos(pitchRad);
   const halfSlopeLength = input.span / 2 / Math.cos(pitchRad);
   const topChordPanelLength = halfSlopeLength / 2;
-  const momentCalibration = Math.max(
-    0.55,
-    Math.min(
-      0.85,
-      0.85 - 0.06 * (input.span - 5) - 0.15 * (input.snowLoad - 1),
-    ),
-  );
+  const localAxialLoad = -ulsVerticalLineLoad * Math.sin(pitchRad);
+  const localTransverseLoad = -ulsVerticalLineLoad * Math.cos(pitchRad);
   const ft_0_d = (1.1 * 0.8 * 14) / 1.3;
   const fc_0_d = (1.1 * 0.8 * 21) / 1.3;
   const fm_d = (1.1 * 0.8 * 24) / 1.3;
   const governingCheck = [...designChecks].sort(
     (left, right) => right.utilization - left.utilization,
   )[0];
+  const governingMomentMember = [...memberResults].sort(
+    (left, right) => right.maxAbsMoment - left.maxAbsMoment,
+  )[0];
 
   return (
     <div className="space-y-4">
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="rounded-lg border border-zinc-700 bg-zinc-800 p-3">
           <div className="text-xs text-zinc-500">Status</div>
           <div
             className={`text-lg font-bold ${allPass ? "text-green-400" : "text-red-400"}`}
@@ -65,13 +64,13 @@ export default function TrussResults({
             {allPass ? "✓ OK" : "✗ FAIL"}
           </div>
         </div>
-        <div className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
+        <div className="rounded-lg border border-zinc-700 bg-zinc-800 p-3">
           <div className="text-xs text-zinc-500">Max utilization</div>
           <div className="text-lg font-bold text-zinc-200">
             {(maxUtilization * 100).toFixed(0)}%
           </div>
         </div>
-        <div className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
+        <div className="rounded-lg border border-zinc-700 bg-zinc-800 p-3">
           <div className="text-xs text-zinc-500">Deflection (SLS)</div>
           <div
             className={`text-lg font-bold ${deflectionPass ? "text-zinc-200" : "text-red-400"}`}
@@ -82,9 +81,9 @@ export default function TrussResults({
             limit {deflectionLimit.toFixed(0)} mm (L/300)
           </div>
         </div>
-        <div className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
+        <div className="rounded-lg border border-zinc-700 bg-zinc-800 p-3">
           <div className="text-xs text-zinc-500">Timber</div>
-          <div className="text-sm font-bold text-zinc-200 mt-0.5">
+          <div className="mt-0.5 text-sm font-bold text-zinc-200">
             Ö {topChordSize}
           </div>
           <div className="text-sm font-bold text-zinc-200">
@@ -96,11 +95,10 @@ export default function TrussResults({
         </div>
       </div>
 
-      {/* Member table */}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-xs text-zinc-500 border-b border-zinc-800">
+            <tr className="border-b border-zinc-800 text-left text-xs text-zinc-500">
               <th className="pb-2 pr-3">Member</th>
               <th className="pb-2 pr-3">Group</th>
               <th className="pb-2 pr-3 text-right">Length (m)</th>
@@ -112,86 +110,92 @@ export default function TrussResults({
             </tr>
           </thead>
           <tbody>
-            {designChecks.map((c) => (
-              <tr
-                key={c.memberId}
-                className="border-b border-zinc-800/50 hover:bg-zinc-800/30"
-              >
-                <td className="py-1.5 pr-3 font-mono text-zinc-300">
-                  {c.label}
-                </td>
-                <td className="py-1.5 pr-3 text-zinc-500 text-xs">
-                  {c.group === "topChord"
-                    ? "Top chord"
-                    : c.group === "bottomChord"
-                      ? "Bottom chord"
-                      : "Web"}
-                </td>
-                <td className="py-1.5 pr-3 text-right text-zinc-400">
-                  {result.memberResults
-                    .find((m) => m.memberId === c.memberId)
-                    ?.length.toFixed(2)}
-                </td>
-                <td
-                  className={`py-1.5 pr-3 text-right font-mono ${
-                    c.axialForce >= 0 ? "text-blue-400" : "text-amber-400"
-                  }`}
+            {designChecks.map((check) => {
+              const member = memberResults.find(
+                (candidate) => candidate.memberId === check.memberId,
+              );
+
+              return (
+                <tr
+                  key={check.memberId}
+                  className="border-b border-zinc-800/50 hover:bg-zinc-800/30"
                 >
-                  {c.axialForce >= 0 ? "+" : ""}
-                  {c.axialForce.toFixed(1)}
-                </td>
-                <td className="py-1.5 pr-3 text-right text-zinc-400 font-mono">
-                  {c.bendingMoment > 0 ? c.bendingMoment.toFixed(2) : "—"}
-                </td>
-                <td className="py-1.5 pr-3 text-xs text-zinc-500">
-                  {c.mode === "combined" ? "N+M" : c.mode}
-                  {c.buckling ? " ⚠" : ""}
-                </td>
-                <td className="py-1.5 pr-3 w-32">
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${utilizationBarColor(c.utilization)}`}
-                        style={{
-                          width: `${Math.min(c.utilization * 100, 100)}%`,
-                        }}
-                      />
+                  <td className="py-1.5 pr-3 font-mono text-zinc-300">
+                    {check.label}
+                  </td>
+                  <td className="py-1.5 pr-3 text-xs text-zinc-500">
+                    {check.group === "topChord"
+                      ? "Top chord"
+                      : check.group === "bottomChord"
+                        ? "Bottom chord"
+                        : "Web"}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right text-zinc-400">
+                    {member?.length.toFixed(2)}
+                  </td>
+                  <td
+                    className={`py-1.5 pr-3 text-right font-mono ${
+                      check.axialForce >= 0 ? "text-blue-400" : "text-amber-400"
+                    }`}
+                  >
+                    {check.axialForce >= 0 ? "+" : ""}
+                    {check.axialForce.toFixed(1)}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right font-mono text-zinc-400">
+                    {check.bendingMoment > 0
+                      ? check.bendingMoment.toFixed(2)
+                      : "—"}
+                  </td>
+                  <td className="py-1.5 pr-3 text-xs text-zinc-500">
+                    {check.mode === "combined" ? "N+M" : check.mode}
+                    {check.buckling ? " ⚠" : ""}
+                  </td>
+                  <td className="py-1.5 pr-3 w-32">
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800">
+                        <div
+                          className={`h-full rounded-full ${utilizationBarColor(check.utilization)}`}
+                          style={{
+                            width: `${Math.min(check.utilization * 100, 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <span className="w-8 text-right text-xs text-zinc-500">
+                        {(check.utilization * 100).toFixed(0)}%
+                      </span>
                     </div>
-                    <span className="text-xs text-zinc-500 w-8 text-right">
-                      {(c.utilization * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                </td>
-                <td className="py-1.5 text-center">
-                  {c.pass ? (
-                    <span className="text-green-500">✓</span>
-                  ) : (
-                    <span className="text-red-500">✗</span>
-                  )}
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="py-1.5 text-center">
+                    {check.pass ? (
+                      <span className="text-green-500">✓</span>
+                    ) : (
+                      <span className="text-red-500">✗</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
 
       <p className="text-xs text-zinc-600">
         ULS: 1.35G + 1.5Q · SLS: L/300 · EC5 (EN 1995) · C24 (EN 338) · γ_M=1.3
-        · k_mod=0.8 (medium-term, SC1/2) · Top chord: N+M combined (§6.3.2) ·
-        global analysis assumes pin joints, with top chord bending introduced
-        separately by an engineering approximation fitted to TräGuiden tabell
-        4.2
+        · k_mod=0.8 (medium-term, SC1/2) · top chord analyzed as 2D frame
+        elements · bottom chord and webs analyzed as axial-only bars · internal
+        joints use rotational springs of{" "}
+        {input.jointRotationalStiffness.toFixed(0)} kNm/rad
       </p>
 
-      <section className="rounded-lg border border-zinc-700 bg-zinc-900/80 p-4 space-y-4">
+      <section className="space-y-4 rounded-lg border border-zinc-700 bg-zinc-900/80 p-4">
         <div>
           <h2 className="text-sm font-semibold text-zinc-100">
             Engineering Calculation Notes
           </h2>
           <p className="mt-1 text-xs leading-5 text-zinc-400">
-            This section describes exactly what the current model does so an
-            engineer can review the assumptions, reproduce the formulas, and
-            challenge any part of the implementation.
+            This section describes the current frame-truss model so an engineer
+            can review the assumptions, reproduce the formulas, and challenge
+            any part of the implementation.
           </p>
         </div>
 
@@ -213,13 +217,14 @@ export default function TrussResults({
               </p>
               <p>Support model: left pinned, right roller.</p>
               <p>
+                Top chord is modeled with frame elements; bottom chord and web
+                members remain axial-only bars.
+              </p>
+              <p>
                 Truss rise: h = (span / 2) × tan(pitch) ={" "}
                 {((input.span / 2) * Math.tan(pitchRad)).toFixed(3)} m.
               </p>
-              <p>
-                Top chord panel length used for load distribution:{" "}
-                {topChordPanelLength.toFixed(3)} m.
-              </p>
+              <p>Top chord panel length: {topChordPanelLength.toFixed(3)} m.</p>
             </div>
           </div>
 
@@ -228,38 +233,34 @@ export default function TrussResults({
               2. Load Conversion
             </h3>
             <div className="mt-2 space-y-1 text-xs leading-5 text-zinc-400">
-              <p>Dead load is treated as acting on roof slope surface.</p>
+              <p>Dead load is treated on the roof slope surface.</p>
               <p>
-                Snow load is treated as acting on horizontal projection and is
-                not reduced by cos(pitch).
+                Snow load is treated on horizontal projection and converted to a
+                sloped-member load by multiplying with cos(pitch).
               </p>
               <p>Pitch = {input.pitch.toFixed(1)}°.</p>
               <p>
-                Dead line load on rafter: g = deadLoad × spacing ={" "}
+                Dead line load on top chord: g = deadLoad × spacing ={" "}
                 {input.deadLoad.toFixed(3)} × {input.spacing.toFixed(3)} ={" "}
                 {deadLineLoad.toFixed(3)} kN/m.
               </p>
               <p>
-                Snow line load: q = snowLoad × spacing ={" "}
+                Snow line load on plan projection: q = snowLoad × spacing ={" "}
                 {input.snowLoad.toFixed(3)} × {input.spacing.toFixed(3)} ={" "}
                 {snowLineLoad.toFixed(3)} kN/m.
               </p>
               <p>
-                ULS line load: 1.35g + 1.5q = {ulsLineLoad.toFixed(3)} kN/m.
-              </p>
-              <p>SLS line load: g + q = {slsLineLoad.toFixed(3)} kN/m.</p>
-              <p>
-                Each rafter half-span is discretized into two loaded top chord
-                panels, and the distributed load is converted to joint loads at
-                support, mid-rafter, ridge, and symmetric right-side nodes.
+                ULS vertical load on each top chord frame member: 1.35g + 1.5q ×
+                cos(pitch) = {ulsVerticalLineLoad.toFixed(3)} kN/m.
               </p>
               <p>
-                Tributary lengths differ by load type: dead load uses
-                slope-based segment lengths ({topChordPanelLength.toFixed(3)}{" "}
-                m), while snow load uses horizontal-projection segment lengths (
-                {(input.span / 4).toFixed(3)} m). Support nodes receive
-                half-tributary; interior top chord nodes receive full tributary
-                from adjacent panels.
+                SLS vertical load on each top chord frame member: g + q ×
+                cos(pitch) = {slsVerticalLineLoad.toFixed(3)} kN/m.
+              </p>
+              <p>
+                ULS local beam load components used by the solver: qx ={" "}
+                {localAxialLoad.toFixed(3)} kN/m, qy ={" "}
+                {localTransverseLoad.toFixed(3)} kN/m.
               </p>
             </div>
           </div>
@@ -270,29 +271,34 @@ export default function TrussResults({
             </h3>
             <div className="mt-2 space-y-1 text-xs leading-5 text-zinc-400">
               <p>Analysis method: 2D direct stiffness method.</p>
+              <p>Shared node DOFs: ux and uy.</p>
               <p>
-                Each member is axial-only. No bending stiffness is included in
-                the truss solver itself.
+                Top chord members use Euler-Bernoulli frame elements with axial
+                and bending stiffness.
               </p>
               <p>
-                Global analysis assumes pin joints; bending effects are added
-                later as a separate design step for the top chord.
+                Bottom chord and web members remain axial-only truss elements
+                embedded in the same global DOF system.
               </p>
-              <p>Degrees of freedom: 2 per node (horizontal and vertical).</p>
+              <p>
+                Each top chord member end has its own rotational DOF. Adjacent
+                top chord member ends at the same joint are connected by a
+                rotational spring kθ ={" "}
+                {input.jointRotationalStiffness.toFixed(0)} kNm/rad.
+              </p>
+              <p>
+                Support conditions: left support fixes ux and uy, right support
+                fixes uy. Top chord end rotations at the supports remain free.
+              </p>
               <p>
                 Boundary conditions are enforced by row and column elimination,
                 not a penalty spring.
               </p>
               <p>
-                Member stiffness: EA/L, with E = 11 000 MPa (E0,mean).
-                Cross-section areas differ by group: top chord uses{" "}
-                {input.timberWidth} × {input.topChordHeight} mm, bottom chord
+                Member stiffness uses E = 11 000 MPa (E0,mean). Top chord uses{" "}
+                {input.timberWidth} × {input.topChordHeight} mm; bottom chord
                 and web members use {input.timberWidth} ×{" "}
                 {input.bottomChordHeight} mm.
-              </p>
-              <p>
-                Member forces reported in the table are ULS axial forces from
-                the stiffness analysis.
               </p>
             </div>
           </div>
@@ -331,23 +337,27 @@ export default function TrussResults({
               5. Member Checks
             </h3>
             <div className="mt-2 space-y-2 text-xs leading-5 text-zinc-400">
-              <p>Tension members: utilization = N / (ft,0,d × A).</p>
+              <p>Pure tension members: utilization = N / (ft,0,d × A).</p>
               <p>
-                Compression members: utilization = N / (kc × fc,0,d × A), where
-                kc is the EC5 §6.3.2 instability factor.
+                Tension + bending members: utilization = σt / ft,0,d + σm /
+                fm,d.
+              </p>
+              <p>
+                Pure compression members: utilization = N / (kc × fc,0,d × A),
+                where kc is the EC5 §6.3.2 instability factor.
               </p>
               <p>
                 Relative slenderness: λ_rel = (λ / π) × √(fc,0,k / E0,05), with
-                βc = 0.2 (solid timber).
+                βc = 0.2.
               </p>
               <p>
-                Web members use in-plane buckling only (out-of-plane restraint
-                assumed from nail-plate connections). Bottom chord compression,
-                if it occurs, uses the minimum of in-plane and out-of-plane kc.
+                Web members use in-plane buckling only. Top chord out-of-plane
+                buckling assumes 0.6 m lateral bracing spacing. Bottom chord
+                compression uses the minimum of in-plane and out-of-plane kc.
               </p>
               <p>
-                Top chord members are checked as combined compression + bending
-                using EC5 eq. 6.23 and 6.24:
+                Compression + bending members use EC5 eq. 6.23 and 6.24 with
+                moments taken directly from the frame analysis:
               </p>
               <p className="font-mono text-zinc-300">
                 util_6.23 = σc / (kc,y × fc,0,d) + σm / fm,d
@@ -356,49 +366,48 @@ export default function TrussResults({
                 util_6.24 = σc / (kc,z × fc,0,d) + km × σm / fm,d
               </p>
               <p>
-                Governing top chord utilization = max(util_6.23, util_6.24),
-                with km = 0.7 and assumed top chord lateral bracing spacing 0.6
-                m.
+                Governing compression+bending utilization = max(util_6.23,
+                util_6.24), with km = 0.7.
               </p>
             </div>
           </div>
 
           <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3 lg:col-span-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">
-              6. Top Chord Bending Approximation
+              6. Semi-Rigid Joint Model
             </h3>
             <div className="mt-2 space-y-1 text-xs leading-5 text-zinc-400">
               <p>
-                Base panel moment assumption: M = 9wL² / 128 for an ideal
-                two-span continuous beam under uniform load.
+                Bending is solved directly in the global analysis because chord
+                members carry EI and adjacent top chord member ends are coupled
+                by rotational springs.
               </p>
               <p>
-                The actual truss model is not that beam system, so this moment
-                is not derived directly from the global stiffness analysis.
-              </p>
-              <p>
-                Instead, the tool uses a separate engineering approximation
-                fitted to TräGuiden tabell 4.2 to estimate top chord bending for
-                nail-plated W-trusses.
+                The spring relation is ΔM = kθ × Δθ between the connected
+                member-end rotations at a joint.
               </p>
               <p className="font-mono text-zinc-300">
-                calibration = clamp(0.85 - 0.06 × (span - 5) - 0.15 × (snowLoad
-                - 1), 0.55, 0.85)
-              </p>
-              <p>Current calibration factor: {momentCalibration.toFixed(3)}.</p>
-              <p className="font-mono text-zinc-300">
-                M_top = calibration × 9 × wULS × Lpanel² / 128
+                kθ = {input.jointRotationalStiffness.toFixed(0)} kNm/rad
               </p>
               <p>
-                This term is not code-based and not physically derived from an
-                explicit semi-rigid joint model. It is an engineering
-                approximation fitted to TräGuiden data.
+                This is now a true member-end spring model for the top chord. A
+                zero spring gives a pin between adjacent top chord panels, while
+                a very large spring approaches rigid continuity.
               </p>
               <p>
-                For formal engineering review, a better model would either: use
-                beam elements with rotational spring stiffness in the top chord
-                joints, or skip moment estimation and rely on axial checks with
-                explicit restraint and buckling assumptions.
+                This is a lumped joint approximation, not an explicit nail-plate
+                plate-and-fastener model.
+              </p>
+              <p>
+                Governing member moment from the current ULS analysis:{" "}
+                {governingMomentMember.label} ={" "}
+                {governingMomentMember.maxAbsMoment.toFixed(2)} kNm.
+              </p>
+              <p>
+                There is no empirical top-chord calibration factor in the
+                current solver. Current mismatch against TräGuiden tabell 4.2 is
+                therefore more likely to come from geometry/detail assumptions
+                than from the absence of a joint-flexibility mechanism.
               </p>
             </div>
           </div>
@@ -408,10 +417,17 @@ export default function TrussResults({
               7. Deflection Check
             </h3>
             <div className="mt-2 space-y-1 text-xs leading-5 text-zinc-400">
-              <p>SLS uses unfactored load combination g + q.</p>
+              <p>
+                SLS uses the unfactored distributed beam load combination g + q
+                × cos(pitch) on the top chord members.
+              </p>
               <p>
                 Reported deflection is the maximum of the two bottom internal
                 nodes at L/3 and 2L/3.
+              </p>
+              <p>
+                This deflection comes from the full frame-truss analysis, so it
+                includes axial and bending deformation together.
               </p>
               <p>
                 Current result: {midspanDeflection.toFixed(1)} mm against limit{" "}
@@ -431,12 +447,16 @@ export default function TrussResults({
             </h3>
             <div className="mt-2 space-y-1 text-xs leading-5 text-amber-100/80">
               <p>
-                The tool does not model semi-rigid nail-plate joint stiffness
-                explicitly.
+                Joint stiffness is represented by a single lumped rotational
+                spring per internal node, not by a detailed nail-plate model.
               </p>
               <p>
                 Geometry is fixed to one 7-node W-truss arrangement and does not
-                currently vary panel count with span or timber stock.
+                vary panel count with span or timber stock.
+              </p>
+              <p>
+                Web members remain axial-only, so local web bending and
+                eccentric nail-plate behavior are excluded.
               </p>
               <p>
                 TräGuiden states the tabulated trusses are approximate and can
