@@ -39,6 +39,22 @@ function relativeSlenderness(lambda: number): number {
 }
 
 /**
+ * Engineering approximation for top-chord panel bending in nail-plated W-trusses.
+ *
+ * The global truss analysis is axial-only and pin-jointed, so this term is not
+ * produced by the stiffness model itself. Instead, a separate empirical factor is
+ * fitted to TräGuiden tabell 4.2 to approximate the semi-rigid nail-plate moment
+ * redistribution seen in manufactured trusses.
+ *
+ * This is not a code-derived beam-element model and should not be presented as a
+ * first-principles representation of joint stiffness.
+ */
+function getTopChordMomentCalibration(span: number, snowLoad: number): number {
+  const factor = 0.85 - 0.06 * (span - 5) - 0.15 * (snowLoad - 1);
+  return Math.max(0.55, Math.min(0.85, factor));
+}
+
+/**
  * Check all members per Eurocode 5.
  * - Bottom chord / web tension: §6.1.2
  * - Web compression: §6.3.2 (axial only)
@@ -59,12 +75,15 @@ export function checkMembers(
   const fm_d = (EC5.ksys * EC5.kmod * C24.fm_k) / EC5.gamma_M; // MPa
 
   // Distributed ULS load on rafter for top chord bending calculation
-  // Dead load is per m² of slope surface; snow is per m² of plan projection
-  const pitchRad = (input.pitch * Math.PI) / 180;
-  const cosPitch = Math.cos(pitchRad);
+  // Dead load is per m² of slope surface; snow is used directly on the
+  // horizontal projection line load per the current project assumption.
   const deadPerRafterM = input.deadLoad * input.spacing; // kN/m along rafter
-  const snowPerRafterM = input.snowLoad * cosPitch * input.spacing; // kN/m along rafter
+  const snowPerRafterM = input.snowLoad * input.spacing; // kN/m
   const wRafterULS = 1.35 * deadPerRafterM + 1.5 * snowPerRafterM;
+  const momentCalibration = getTopChordMomentCalibration(
+    input.span,
+    input.snowLoad,
+  );
 
   // Top chord lateral bracing: assume battens at ~600mm spacing
   const battenSpacing = 0.6; // metres
@@ -143,11 +162,11 @@ export function checkMembers(
     }
 
     // --- Top chord: combined bending + axial compression (EC5 §6.3.2) ---
-    // Bending moment from distributed load between panel points.
-    // The top chord is continuous over the web connections (nail-plated),
-    // so we use the 2-span continuous beam midspan moment: M = 9wL²/128
-    // (this is ~56% of the simply-supported wL²/8, matching industrial practice)
-    const M_bend = (9 * wRafterULS * mr.length * mr.length) / 128; // kNm
+    // Bending is introduced separately after the pin-jointed global analysis.
+    // We start from the 2-span continuous beam moment M = 9wL²/128 and then
+    // apply an engineering approximation fitted to TräGuiden tabell 4.2.
+    const M_bend =
+      (momentCalibration * (9 * wRafterULS * mr.length * mr.length)) / 128; // kNm
     const W_mm3 = (b * h * h) / 6; // section modulus, mm³
     const sigma_m = (M_bend * 1e6) / W_mm3; // MPa
 

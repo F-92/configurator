@@ -104,25 +104,28 @@ export function computeLoads(
 ): PointLoad[] {
   const { span, pitch, spacing, deadLoad, snowLoad } = input;
   const pitchRad = (pitch * Math.PI) / 180;
-  const cosPitch = Math.cos(pitchRad);
 
   // Half-span on slope
-  const halfSlopeLength = span / 2 / cosPitch;
+  const halfSlopeLength = span / 2 / Math.cos(pitchRad);
 
-  // Line load along slope (kN/m along slope)
-  const deadLineLoad = deadLoad * spacing; // kN/m on slope
-  // Snow acts on plan projection, per slope metre = snowLoad * spacing * cosPitch
-  const snowLineLoad = snowLoad * spacing * cosPitch; // kN/m on slope
+  // Dead load is treated on the roof slope.
+  const deadLineLoad = deadLoad * spacing; // kN/m along slope
+  // Snow load is treated on horizontal projection without cos(pitch) reduction.
+  const snowLineLoad = snowLoad * spacing; // kN/m on horizontal projection
 
   // Apply ULS load factors or use characteristic (SLS)
   const gammaG = factored ? 1.35 : 1.0;
   const gammaQ = factored ? 1.5 : 1.0;
-  const totalLineLoad = gammaG * deadLineLoad + gammaQ * snowLineLoad;
 
-  const segLen = halfSlopeLength / 2; // length of one top chord segment
+  const slopeSegLen = halfSlopeLength / 2; // one top chord segment length on slope
+  const horizontalSegLen = span / 4; // one panel width in horizontal projection
 
-  const loadAtSupport = totalLineLoad * (segLen / 2);
-  const loadAtMid = totalLineLoad * segLen;
+  const loadAtSupport =
+    gammaG * deadLineLoad * (slopeSegLen / 2) +
+    gammaQ * snowLineLoad * (horizontalSegLen / 2);
+  const loadAtMid =
+    gammaG * deadLineLoad * slopeSegLen +
+    gammaQ * snowLineLoad * horizontalSegLen;
 
   const loads: PointLoad[] = [
     { nodeId: 0, fx: 0, fy: -loadAtSupport },

@@ -56,6 +56,7 @@ export default function TrussDesigner() {
 
         {/* Results table */}
         <TrussResults
+          input={input}
           result={result}
           topChordSize={`${input.timberWidth}×${input.topChordHeight}`}
           bottomChordSize={`${input.timberWidth}×${input.bottomChordHeight}`}
