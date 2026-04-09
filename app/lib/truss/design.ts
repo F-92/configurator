@@ -52,6 +52,7 @@ export function checkMembers(
   input: TrussInput,
 ): DesignCheck[] {
   const { timberWidth, topChordHeight, bottomChordHeight } = input;
+  const isTraguiden = input.mode === "traguiden";
 
   // Design strengths (including ksys for load-sharing systems, EC5 §6.6)
   const ft_0_d = (EC5.ksys * EC5.kmod * C24.ft_0_k) / EC5.gamma_M; // MPa
@@ -70,7 +71,8 @@ export function checkMembers(
     const W_mm3 = (b * h * h) / 6;
     const N = mr.axialForce; // kN
     const isTension = N >= 0;
-    const M_bend = Math.abs(mr.maxAbsMoment);
+    // In TräGuiden mode, ignore bending for all members (pure truss assumption)
+    const M_bend = isTraguiden ? 0 : Math.abs(mr.maxAbsMoment);
     const sigma_m = W_mm3 > 0 ? (M_bend * 1e6) / W_mm3 : 0;
     const hasBending = M_bend > 1e-6;
 
@@ -99,8 +101,17 @@ export function checkMembers(
     const i_strong = h / 1000 / Math.sqrt(12); // metres (in-plane, strong axis)
     const i_weak = b / 1000 / Math.sqrt(12); // metres (out-of-plane, weak axis)
 
-    // Buckling lengths
-    const L_inPlane = mr.length; // full member length between panel points
+    // Buckling lengths — reduced effective lengths for nail-plate trusses
+    // TräGuiden mode: full panel length (tables already account for this)
+    // Full frame: top chord 0.7 × panel (continuous), web 0.9 × member
+    const bucklingFactor = isTraguiden
+      ? 1.0
+      : isTopChord
+        ? 0.7
+        : mr.group === "web"
+          ? 0.9
+          : 1.0;
+    const L_inPlane = bucklingFactor * mr.length;
     // Out-of-plane: top chord braced by battens, others use full length
     const L_outOfPlane = isTopChord ? battenSpacing : mr.length;
 
@@ -135,10 +146,15 @@ export function checkMembers(
 
     if (!isTopChord && !hasBending) {
       // Pure compression check for web/bottom chord
-      // Web members in nail-plated trusses are restrained out-of-plane
-      // by the nail plates and chord connections → use in-plane kc only
+      // TräGuiden mode: kc=1.0 (tables already include implicit buckling)
+      // Full frame: web uses in-plane kc only (restrained by nail plates),
+      //   bottom chord uses min(kc_y, kc_z)
       const isWeb = mr.group === "web";
-      const kc_governing = isWeb ? kc_y : Math.min(kc_y, kc_z);
+      const kc_governing = isTraguiden
+        ? 1.0
+        : isWeb
+          ? kc_y
+          : Math.min(kc_y, kc_z);
       const capacity_kN = (kc_governing * fc_0_d * A_mm2) / 1000;
       const utilization = N_abs / capacity_kN;
       return {

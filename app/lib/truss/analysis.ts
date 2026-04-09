@@ -227,14 +227,22 @@ export function analyzeTruss(
   jointRotationalStiffness: number,
 ): AnalysisResult {
   const { nodes, members, supports } = geometry;
+
+  // Determine which top chord members actually use frame DOFs (EI > 0)
   const topChordMembers = members.filter(
     (member) => member.group === "topChord",
   );
+  const hasAnyEI = topChordMembers.some(
+    (m) => memberEIs[members.indexOf(m)] > 0,
+  );
+  // Only allocate rotational DOFs when at least one TC member has EI > 0
+  const frameTCMembers = hasAnyEI ? topChordMembers : [];
+
   const rotationalDofOffset = nodes.length * 2;
   const frameEndDofMap = new Map<number, FrameEndDofs>();
   const nodeFrameRotationDofs = new Map<number, number[]>();
 
-  topChordMembers.forEach((member, index) => {
+  frameTCMembers.forEach((member, index) => {
     const frameEndDofs = {
       start: rotationalDofOffset + index * 2,
       end: rotationalDofOffset + index * 2 + 1,
@@ -250,7 +258,7 @@ export function analyzeTruss(
     nodeFrameRotationDofs.set(member.endNodeId, endList);
   });
 
-  const nDof = nodes.length * 2 + topChordMembers.length * 2;
+  const nDof = nodes.length * 2 + frameTCMembers.length * 2;
   const K = zeroMatrix(nDof);
   const F = zeros(nDof);
   const memberLoads = new Map(
@@ -269,11 +277,11 @@ export function analyzeTruss(
     const c = dx / length;
     const s = dy / length;
 
-    if (member.group === "topChord") {
-      const frameEndDofs = frameEndDofMap.get(member.id);
-      if (!frameEndDofs) {
-        throw new Error(`Missing frame DOFs for member ${member.id}`);
-      }
+    const useFrame =
+      member.group === "topChord" && frameEndDofMap.has(member.id);
+
+    if (useFrame) {
+      const frameEndDofs = frameEndDofMap.get(member.id)!;
 
       const dofs = getFrameElementDofs(
         member.startNodeId,
@@ -368,11 +376,11 @@ export function analyzeTruss(
     const c = dx / length;
     const s = dy / length;
 
-    if (member.group === "topChord") {
-      const frameEndDofs = frameEndDofMap.get(member.id);
-      if (!frameEndDofs) {
-        throw new Error(`Missing frame DOFs for member ${member.id}`);
-      }
+    const useFrame =
+      member.group === "topChord" && frameEndDofMap.has(member.id);
+
+    if (useFrame) {
+      const frameEndDofs = frameEndDofMap.get(member.id)!;
 
       const dofs = getFrameElementDofs(
         member.startNodeId,

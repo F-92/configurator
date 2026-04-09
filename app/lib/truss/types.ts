@@ -42,8 +42,12 @@ export interface LoadCase {
   memberLoads: DistributedMemberLoad[];
 }
 
+/** Analysis mode */
+export type AnalysisMode = "full_frame" | "traguiden";
+
 /** User inputs for the truss design */
 export interface TrussInput {
+  mode: AnalysisMode; // "full_frame" = conservative frame-truss, "traguiden" = pure truss matching tables
   span: number; // metres (5–20)
   pitch: number; // degrees (10–45)
   spacing: number; // truss c/c spacing in metres (typically 1.2)
@@ -108,6 +112,7 @@ export interface TrussGeometry {
 
 /** Full analysis + design output */
 export interface TrussDesignResult {
+  panelCount: number; // number of top chord panels (auto-selected)
   geometry: TrussGeometry;
   loads: LoadCase;
   memberResults: MemberResult[];

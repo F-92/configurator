@@ -17,6 +17,7 @@ type ScenarioResult = {
 };
 
 const BASE_CASE: TrussInput = {
+  mode: "full_frame",
   span: 8,
   pitch: 14,
   spacing: 1.2,
@@ -117,7 +118,7 @@ function runScenario(
     member.group === "topChord" ? EI_top : 0,
   );
 
-  const ulsLoads = computeLoads(input, true);
+  const ulsLoads = computeLoads(input, geometry, true);
   const analysis = analyzeTruss(
     geometry,
     ulsLoads,

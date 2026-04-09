@@ -76,6 +76,7 @@ const BASE_INPUT: Omit<
   | "bottomChordHeight"
   | "jointRotationalStiffness"
 > = {
+  mode: "full_frame",
   pitch: 14,
   spacing: 1.2,
   deadLoad: 0.9,

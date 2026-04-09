@@ -8,12 +8,13 @@ import TrussSVG from "./TrussSVG";
 import TrussResults from "./TrussResults";
 
 const DEFAULT_INPUT: TrussInput = {
+  mode: "full_frame",
   span: 10,
   pitch: 14,
   spacing: 1.2,
   deadLoad: 0.9,
   snowLoad: 1.5,
-  jointRotationalStiffness: 0,
+  jointRotationalStiffness: 1000,
   timberWidth: 45,
   topChordHeight: 195,
   bottomChordHeight: 170,
@@ -48,8 +49,8 @@ export default function TrussDesigner() {
           }`}
         >
           {result.allPass
-            ? `All checks pass — max utilization ${(result.maxUtilization * 100).toFixed(0)}%, deflection ${result.midspanDeflection.toFixed(1)} mm`
-            : `Design fails — ${result.designChecks.filter((c) => !c.pass).length} member(s) over capacity (max ${(result.maxUtilization * 100).toFixed(0)}%)${!result.deflectionPass ? `, deflection ${result.midspanDeflection.toFixed(1)} mm > ${result.deflectionLimit.toFixed(0)} mm` : ""}`}
+            ? `All checks pass — ${result.panelCount} panels, max utilization ${(result.maxUtilization * 100).toFixed(0)}%, deflection ${result.midspanDeflection.toFixed(1)} mm`
+            : `Design fails — ${result.panelCount} panels, ${result.designChecks.filter((c) => !c.pass).length} member(s) over capacity (max ${(result.maxUtilization * 100).toFixed(0)}%)${!result.deflectionPass ? `, deflection ${result.midspanDeflection.toFixed(1)} mm > ${result.deflectionLimit.toFixed(0)} mm` : ""}`}
         </div>
 
         {/* Truss drawing */}

@@ -59,8 +59,40 @@ export default function TrussInputForm({
   const set = (key: keyof TrussInput, value: number) =>
     onChange({ ...input, [key]: value });
 
+  const isTraguiden = input.mode === "traguiden";
+
   return (
     <div className="space-y-5">
+      {/* Mode toggle */}
+      <div>
+        <span className="text-xs font-semibold tracking-wider text-zinc-500 uppercase">
+          Analysis Mode
+        </span>
+        <div className="grid grid-cols-2 gap-1.5 mt-2">
+          {(["full_frame", "traguiden"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => onChange({ ...input, mode: m })}
+              className={`text-xs px-2 py-1.5 rounded border transition-colors ${
+                input.mode === m
+                  ? "bg-amber-500/20 border-amber-500 text-amber-400"
+                  : "bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-500"
+              }`}
+            >
+              {m === "full_frame" ? "Full Frame" : "TräGuiden"}
+            </button>
+          ))}
+        </div>
+        {isTraguiden && (
+          <p className="mt-2 text-xs leading-5 text-amber-400/80 border border-amber-500/20 bg-amber-500/5 rounded px-2 py-1.5">
+            TräGuiden mode: pure truss (no bending, kθ=0, 4 panels). Matches
+            tabulated values but is not conservative.
+          </p>
+        )}
+      </div>
+
+      <hr className="border-zinc-800" />
+
       <h3 className="text-xs font-semibold tracking-wider text-zinc-500 uppercase">
         Geometry
       </h3>
@@ -115,20 +147,22 @@ export default function TrussInputForm({
         step={0.1}
         onChange={(v) => set("spacing", v)}
       />
-      <Field
-        label="Joint rotational stiffness"
-        unit="kNm/rad"
-        value={input.jointRotationalStiffness}
-        min={0}
-        max={1000}
-        step={25}
-        onChange={(v) => set("jointRotationalStiffness", v)}
-      />
-      <p className="-mt-3 text-xs leading-5 text-zinc-500">
-        Default is 0 kNm/rad as a pinned-joint reference. The current solver now
-        uses true member-end rotational springs, but the spring value is not yet
-        calibrated to manufacturer or TräGuiden connection data.
-      </p>
+      <div className={isTraguiden ? "opacity-40 pointer-events-none" : ""}>
+        <Field
+          label="Joint rotational stiffness"
+          unit="kNm/rad"
+          value={isTraguiden ? 0 : input.jointRotationalStiffness}
+          min={0}
+          max={5000}
+          step={100}
+          onChange={(v) => set("jointRotationalStiffness", v)}
+        />
+        <p className="-mt-3 text-xs leading-5 text-zinc-500">
+          {isTraguiden
+            ? "Disabled in TräGuiden mode (kθ = 0)."
+            : "Default 1000 kNm/rad (lightly semi-rigid). Set 0 for pinned joints (pure truss). Typical nail-plate range: 800–1500 kNm/rad."}
+        </p>
+      </div>
 
       <hr className="border-zinc-800" />
 

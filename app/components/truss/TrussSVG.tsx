@@ -154,25 +154,37 @@ export default function TrussSVG({ result }: TrussSVGProps) {
         })}
 
         {/* Dimension line at bottom */}
-        <line
-          x1={nodes[0].x}
-          y1={toSvgY(-0.3)}
-          x2={nodes[nodes.length - 3].x}
-          y2={toSvgY(-0.3)}
-          stroke="#71717a"
-          strokeWidth={0.02}
-          markerStart="url(#arrowL)"
-          markerEnd="url(#arrowR)"
-        />
-        <text
-          x={(nodes[0].x + nodes[nodes.length - 3].x) / 2}
-          y={toSvgY(-0.5)}
-          textAnchor="middle"
-          className="fill-zinc-500"
-          fontSize={0.2}
-        >
-          {(nodes[nodes.length - 3].x - nodes[0].x).toFixed(1)} m
-        </text>
+        {(() => {
+          const leftX = Math.min(
+            ...nodes.filter((n) => n.y === 0).map((n) => n.x),
+          );
+          const rightX = Math.max(
+            ...nodes.filter((n) => n.y === 0).map((n) => n.x),
+          );
+          return (
+            <>
+              <line
+                x1={leftX}
+                y1={toSvgY(-0.3)}
+                x2={rightX}
+                y2={toSvgY(-0.3)}
+                stroke="#71717a"
+                strokeWidth={0.02}
+                markerStart="url(#arrowL)"
+                markerEnd="url(#arrowR)"
+              />
+              <text
+                x={(leftX + rightX) / 2}
+                y={toSvgY(-0.5)}
+                textAnchor="middle"
+                className="fill-zinc-500"
+                fontSize={0.2}
+              >
+                {(rightX - leftX).toFixed(1)} m
+              </text>
+            </>
+          );
+        })()}
 
         <defs>
           <marker
